@@ -97,15 +97,15 @@ which = "6"
 [workspace]
 
 [patch.crates-io]
-equihash = {git = "https://github.com/zcash/librustzcash", rev = "c334f7040b08a7456d34e4b9e24d678f232a7d17"}
-zcash_address = {git = "https://github.com/zcash/librustzcash", rev = "c334f7040b08a7456d34e4b9e24d678f232a7d17"}
-zcash_client_backend = {git = "https://github.com/zcash/librustzcash", rev = "c334f7040b08a7456d34e4b9e24d678f232a7d17"}
-zcash_encoding = {git = "https://github.com/zcash/librustzcash", rev = "c334f7040b08a7456d34e4b9e24d678f232a7d17"}
-zcash_keys = {git = "https://github.com/zcash/librustzcash", rev = "c334f7040b08a7456d34e4b9e24d678f232a7d17"}
-zcash_protocol = {git = "https://github.com/zcash/librustzcash", rev = "c334f7040b08a7456d34e4b9e24d678f232a7d17"}
-zip321 = {git = "https://github.com/zcash/librustzcash", rev = "c334f7040b08a7456d34e4b9e24d678f232a7d17"}
-zcash_primitives = {git = "https://github.com/zcash/librustzcash", rev = "c334f7040b08a7456d34e4b9e24d678f232a7d17"}
-zcash_proofs = {git = "https://github.com/zcash/librustzcash", rev = "c334f7040b08a7456d34e4b9e24d678f232a7d17"}
+equihash = {git = "https://github.com/zcash/librustzcash", rev = "10f53c4b61bd659841b6c39353540c8ce3e4fcb2"}
+zcash_address = {git = "https://github.com/zcash/librustzcash", rev = "10f53c4b61bd659841b6c39353540c8ce3e4fcb2"}
+zcash_client_backend = {git = "https://github.com/zcash/librustzcash", rev = "10f53c4b61bd659841b6c39353540c8ce3e4fcb2"}
+zcash_encoding = {git = "https://github.com/zcash/librustzcash", rev = "10f53c4b61bd659841b6c39353540c8ce3e4fcb2"}
+zcash_keys = {git = "https://github.com/zcash/librustzcash", rev = "10f53c4b61bd659841b6c39353540c8ce3e4fcb2"}
+zcash_protocol = {git = "https://github.com/zcash/librustzcash", rev = "10f53c4b61bd659841b6c39353540c8ce3e4fcb2"}
+zip321 = {git = "https://github.com/zcash/librustzcash", rev = "10f53c4b61bd659841b6c39353540c8ce3e4fcb2"}
+zcash_primitives = {git = "https://github.com/zcash/librustzcash", rev = "10f53c4b61bd659841b6c39353540c8ce3e4fcb2"}
+zcash_proofs = {git = "https://github.com/zcash/librustzcash", rev = "10f53c4b61bd659841b6c39353540c8ce3e4fcb2"}
 
 [profile.release]
 lto = true
