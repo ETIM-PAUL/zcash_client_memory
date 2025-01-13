@@ -11,28 +11,28 @@ build = "build.rs"
 categories = ["cryptography::cryptocurrencies"]
 
 [dependencies]
-zcash_client_backend = {version = "0.15", features = ["unstable-serialization", "unstable-spanning-tree", "sync"]}
-zcash_address = "0.6"
-zcash_keys = {version = "0.5", features = ["sapling"]}
-zcash_encoding = "0.2.1"
-zcash_primitives = {version = "0.20", default-features = false}
-zcash_protocol = "0.4.1"
+zcash_client_backend = {version = "0.16", features = ["unstable-serialization", "unstable-spanning-tree", "sync"]}
+zcash_address = {version = "0.6", default-features = false}
+zcash_keys = {version = "0.6", features = ["sapling"]}
+zcash_encoding = {version = "0.2.1", default-features = false}
+zcash_primitives = {version = "0.21", default-features = false}
+zcash_protocol = {version = "0.4.1", default-features = false}
 
 tokio = {version = "1", features = ["sync"]}
 
 # Dependencies exposed in a public API:
 # (Breaking upgrades to these require a breaking upgrade to this crate.)
 # - Errors
-bip32 = {version = "0.5", default-features = false, features = ["secp256k1-ffi"], optional = true}
+bip32 = {version = "0.5", default-features = false, optional = true}
 zip32 = "0.1.2"
 
 # - Logging and metrics
-bs58 = {version = "0.5", features = ["check"]}
+bs58 = {version = "0.5", default-features = false, features = ["alloc", "check"]}
 
 # - Serialization
-tracing = "0.1"
+tracing = {version = "0.1", default-features = false}
 byteorder = "1"
-nonempty = "0.7"
+nonempty = {version = "0.11", default-features = false}
 prost = "0.13"
 group = "0.13"
 
@@ -41,18 +41,18 @@ jubjub = "0.10"
 secrecy = "0.8"
 
 # - Static assertions
-subtle = "2.2.3"
+subtle = {version = "2.2.3", default-features = false}
 
 # - Shielded protocols
-orchard = {version = "0.10", default-features = false, optional = true}
+orchard = {version = "0.10.1", default-features = false, optional = true}
 static_assertions = "1"
 
 # - Note commitment trees
-sapling = {package = "sapling-crypto", version = "0.3", default-features = false}
+sapling = {package = "sapling-crypto", version = "0.4", default-features = false}
 shardtree = {version = "0.5", features = ["legacy-api"]}
 thiserror = "1.0.61"
 
-incrementalmerkletree = "0.7"
+incrementalmerkletree = {version = "0.7.1", default-features = false}
 async-trait = { version = "0.1" }
 
 # - Test dependencies
@@ -97,15 +97,17 @@ which = "6"
 [workspace]
 
 [patch.crates-io]
-equihash = {git = "https://github.com/zcash/librustzcash", rev = "9478e551003eec87c97d46055982f9a7202096b7"}
-zcash_address = {git = "https://github.com/zcash/librustzcash", rev = "9478e551003eec87c97d46055982f9a7202096b7"}
-zcash_client_backend = {git = "https://github.com/zcash/librustzcash", rev = "9478e551003eec87c97d46055982f9a7202096b7"}
-zcash_encoding = {git = "https://github.com/zcash/librustzcash", rev = "9478e551003eec87c97d46055982f9a7202096b7"}
-zcash_keys = {git = "https://github.com/zcash/librustzcash", rev = "9478e551003eec87c97d46055982f9a7202096b7"}
-zcash_protocol = {git = "https://github.com/zcash/librustzcash", rev = "9478e551003eec87c97d46055982f9a7202096b7"}
-zip321 = {git = "https://github.com/zcash/librustzcash", rev = "9478e551003eec87c97d46055982f9a7202096b7"}
-zcash_primitives = {git = "https://github.com/zcash/librustzcash", rev = "9478e551003eec87c97d46055982f9a7202096b7"}
-zcash_proofs = {git = "https://github.com/zcash/librustzcash", rev = "9478e551003eec87c97d46055982f9a7202096b7"}
+equihash = {git = "https://github.com/zcash/librustzcash", rev = "dcd2c3aa03af46fb6f07956d9894041b6d5dc81b"}
+zcash_address = {git = "https://github.com/zcash/librustzcash", rev = "dcd2c3aa03af46fb6f07956d9894041b6d5dc81b"}
+zcash_client_backend = {git = "https://github.com/zcash/librustzcash", rev = "dcd2c3aa03af46fb6f07956d9894041b6d5dc81b"}
+zcash_encoding = {git = "https://github.com/zcash/librustzcash", rev = "dcd2c3aa03af46fb6f07956d9894041b6d5dc81b"}
+zcash_keys = {git = "https://github.com/zcash/librustzcash", rev = "dcd2c3aa03af46fb6f07956d9894041b6d5dc81b"}
+zcash_protocol = {git = "https://github.com/zcash/librustzcash", rev = "dcd2c3aa03af46fb6f07956d9894041b6d5dc81b"}
+zip321 = {git = "https://github.com/zcash/librustzcash", rev = "dcd2c3aa03af46fb6f07956d9894041b6d5dc81b"}
+zcash_primitives = {git = "https://github.com/zcash/librustzcash", rev = "dcd2c3aa03af46fb6f07956d9894041b6d5dc81b"}
+zcash_proofs = {git = "https://github.com/zcash/librustzcash", rev = "dcd2c3aa03af46fb6f07956d9894041b6d5dc81b"}
+pczt = {git = "https://github.com/zcash/librustzcash", rev = "dcd2c3aa03af46fb6f07956d9894041b6d5dc81b"}
+zcash_transparent = {git = "https://github.com/zcash/librustzcash", rev = "dcd2c3aa03af46fb6f07956d9894041b6d5dc81b"}
 
 [profile.release]
 lto = true
