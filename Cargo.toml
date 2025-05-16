@@ -51,11 +51,14 @@ subtle = {version = "2.2.3", default-features = false}
 orchard = {version = "0.11", default-features = false, optional = true}
 static_assertions = "1"
 
+# - Transparent protocol
+secp256k1 = {version = "0.29", default-features = false, features = ["alloc"], optional = true}
+
 # - Note commitment trees
 sapling = {package = "sapling-crypto", version = "0.5", default-features = false}
 shardtree = {version = "0.6.1", features = ["legacy-api"]}
-thiserror = "1.0.61"
 
+thiserror = "1.0.61"
 incrementalmerkletree = {version = "0.8.2", default-features = false}
 async-trait = { version = "0.1" }
 
@@ -79,15 +82,33 @@ local-consensus = ["zcash_protocol/local-consensus"]
 ## Enables multithreading support for creating proofs and building subtrees.
 multicore = ["zcash_primitives/multicore"]
 
-## Enables support for storing data related to the sending and receiving of 
+## Enables support for storing data related to the sending and receiving of
 ## Orchard funds.
 orchard = ["dep:orchard", "zcash_client_backend/orchard", "zcash_keys/orchard"]
 
 ## Exposes APIs that are useful for testing, such as `proptest` strategies.
-test-dependencies = ["dep:proptest", "incrementalmerkletree/test-dependencies", "shardtree/test-dependencies", "zcash_primitives/test-dependencies", "zcash_client_backend/test-dependencies", "incrementalmerkletree/test-dependencies"]
+test-dependencies = [
+  "dep:proptest",
+  "incrementalmerkletree/test-dependencies",
+  "shardtree/test-dependencies",
+  "zcash_primitives/test-dependencies",
+  "zcash_client_backend/test-dependencies",
+  "incrementalmerkletree/test-dependencies"
+]
 
 ## Enables receiving transparent funds and sending to transparent recipients
-transparent-inputs = ["dep:bip32", "zcash_keys/transparent-inputs", "zcash_client_backend/transparent-inputs"]
+transparent-inputs = [
+  "dep:bip32",
+  "dep:secp256k1",
+  "zcash_keys/transparent-inputs",
+  "zcash_client_backend/transparent-inputs"
+]
+
+# Enables operations that permit arbitrary transparent pubkeys to be associated
+# with an account in the wallet. Applications that rely on this feature must
+# maintain spending keys corresponding to all imported pubkeys for any account
+# from which it permits spending.
+transparent-key-import = ["transparent-inputs"]
 
 #! ### Experimental features
 
@@ -104,17 +125,17 @@ which = "7"
 [workspace]
 
 [patch.crates-io]
-equihash = {git = "https://github.com/zcash/librustzcash", rev = "8be259c579762f1b0f569453a20c0d0dbeae6c07"}
-zcash_address = {git = "https://github.com/zcash/librustzcash", rev = "8be259c579762f1b0f569453a20c0d0dbeae6c07"}
-zcash_client_backend = {git = "https://github.com/zcash/librustzcash", rev = "8be259c579762f1b0f569453a20c0d0dbeae6c07"}
-zcash_encoding = {git = "https://github.com/zcash/librustzcash", rev = "8be259c579762f1b0f569453a20c0d0dbeae6c07"}
-zcash_keys = {git = "https://github.com/zcash/librustzcash", rev = "8be259c579762f1b0f569453a20c0d0dbeae6c07"}
-zcash_protocol = {git = "https://github.com/zcash/librustzcash", rev = "8be259c579762f1b0f569453a20c0d0dbeae6c07"}
-zip321 = {git = "https://github.com/zcash/librustzcash", rev = "8be259c579762f1b0f569453a20c0d0dbeae6c07"}
-zcash_primitives = {git = "https://github.com/zcash/librustzcash", rev = "8be259c579762f1b0f569453a20c0d0dbeae6c07"}
-zcash_proofs = {git = "https://github.com/zcash/librustzcash", rev = "8be259c579762f1b0f569453a20c0d0dbeae6c07"}
-pczt = {git = "https://github.com/zcash/librustzcash", rev = "8be259c579762f1b0f569453a20c0d0dbeae6c07"}
-zcash_transparent = {git = "https://github.com/zcash/librustzcash", rev = "8be259c579762f1b0f569453a20c0d0dbeae6c07"}
+equihash = {git = "https://github.com/zcash/librustzcash", rev = "8c0abf9a5e5a1298536ce2f73916826cb0937459"}
+zcash_address = {git = "https://github.com/zcash/librustzcash", rev = "8c0abf9a5e5a1298536ce2f73916826cb0937459"}
+zcash_client_backend = {git = "https://github.com/zcash/librustzcash", rev = "8c0abf9a5e5a1298536ce2f73916826cb0937459"}
+zcash_encoding = {git = "https://github.com/zcash/librustzcash", rev = "8c0abf9a5e5a1298536ce2f73916826cb0937459"}
+zcash_keys = {git = "https://github.com/zcash/librustzcash", rev = "8c0abf9a5e5a1298536ce2f73916826cb0937459"}
+zcash_protocol = {git = "https://github.com/zcash/librustzcash", rev = "8c0abf9a5e5a1298536ce2f73916826cb0937459"}
+zip321 = {git = "https://github.com/zcash/librustzcash", rev = "8c0abf9a5e5a1298536ce2f73916826cb0937459"}
+zcash_primitives = {git = "https://github.com/zcash/librustzcash", rev = "8c0abf9a5e5a1298536ce2f73916826cb0937459"}
+zcash_proofs = {git = "https://github.com/zcash/librustzcash", rev = "8c0abf9a5e5a1298536ce2f73916826cb0937459"}
+pczt = {git = "https://github.com/zcash/librustzcash", rev = "8c0abf9a5e5a1298536ce2f73916826cb0937459"}
+zcash_transparent = {git = "https://github.com/zcash/librustzcash", rev = "8c0abf9a5e5a1298536ce2f73916826cb0937459"}
 
 [profile.release]
 lto = true
