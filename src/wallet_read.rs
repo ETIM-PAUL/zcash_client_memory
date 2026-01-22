@@ -721,6 +721,37 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
         Ok(balances)
     }
 
+    #[cfg(feature = "transparent-inputs")]
+    fn get_transparent_address_metadata(
+        &self,
+        account: Self::AccountId,
+        address: &TransparentAddress,
+    ) -> Result<Option<TransparentAddressMetadata>, Self::Error> {
+        let acc = self
+            .get_account(account)?
+            .ok_or(Error::AccountUnknown(account))?;
+
+        // Search through account addresses for matching transparent receiver
+        for (diversifier_index, ua) in acc.addresses().iter() {
+            if let Some(transparent_addr) = ua.transparent() {
+                if transparent_addr == address {
+                    let metadata = TransparentAddressMetadata::derived(
+                        Scope::External.into(),
+                        NonHardenedChildIndex::from_index((*diversifier_index).try_into().unwrap())
+                            .expect(
+                                "diversifier index corresponds to a valid NonHardenedChildIndex",
+                            ),
+                        Exposure::Unknown,
+                        None,
+                    );
+                    return Ok(Some(metadata));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
     fn transaction_data_requests(&self) -> Result<Vec<TransactionDataRequest>, Self::Error> {
         tracing::debug!("transaction_data_requests");
         Ok(self
