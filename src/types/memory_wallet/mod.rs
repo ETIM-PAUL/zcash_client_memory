@@ -1227,4 +1227,21 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             })
             .collect::<Vec<_>>())
     }
+
+    // Public accessor methods for transaction history feature
+
+    /// Returns a reference to the received notes table for transaction history queries
+    pub fn received_notes(&self) -> &ReceivedNoteTable {
+        &self.received_notes
+    }
+
+    /// Returns a reference to the sent notes table for transaction history queries
+    pub fn sent_notes(&self) -> &SentNoteTable {
+        &self.sent_notes
+    }
+
+    /// Returns a reference to the transaction table for transaction history queries
+    pub fn tx_table(&self) -> &TransactionTable {
+        &self.tx_table
+    }
 }

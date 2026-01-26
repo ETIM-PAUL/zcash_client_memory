@@ -52,10 +52,10 @@ impl Deref for ReceievedNoteSpends {
 /// A note that has been received by the wallet
 /// TODO: Instead of Vec, perhaps we should identify by some unique ID
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ReceivedNoteTable(pub(crate) Vec<ReceivedNote>);
+pub struct ReceivedNoteTable(pub(crate) Vec<ReceivedNote>);
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ReceivedNote {
+pub struct ReceivedNote {
     // Uniquely identifies this note
     pub(crate) note_id: NoteId,
     pub(crate) txid: TxId,
@@ -89,6 +89,14 @@ impl ReceivedNote {
     }
     pub fn note_id(&self) -> NoteId {
         self.note_id
+    }
+    /// Returns a reference to the note value
+    pub fn note(&self) -> &Note {
+        &self.note
+    }
+    /// Returns a reference to the memo
+    pub fn memo(&self) -> &Memo {
+        &self.memo
     }
     pub fn from_sent_tx_output(
         txid: TxId,

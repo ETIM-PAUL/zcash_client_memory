@@ -40,7 +40,7 @@ impl SentNoteId {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct SentNoteTable(pub(crate) BTreeMap<SentNoteId, SentNote>);
+pub struct SentNoteTable(pub(crate) BTreeMap<SentNoteId, SentNote>);
 
 impl SentNoteTable {
     pub fn new() -> Self {
@@ -159,11 +159,30 @@ impl Deref for SentNoteTable {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct SentNote {
+pub struct SentNote {
     pub(crate) from_account_id: AccountId,
     pub(crate) to: Recipient<AccountId>,
     pub(crate) value: Zatoshis,
     pub(crate) memo: Memo,
+}
+
+impl SentNote {
+    /// Returns the account ID that sent this note
+    pub fn from_account_id(&self) -> AccountId {
+        self.from_account_id
+    }
+    /// Returns a reference to the recipient
+    pub fn to(&self) -> &Recipient<AccountId> {
+        &self.to
+    }
+    /// Returns the value sent
+    pub fn value(&self) -> Zatoshis {
+        self.value
+    }
+    /// Returns a reference to the memo
+    pub fn memo(&self) -> &Memo {
+        &self.memo
+    }
 }
 
 mod serialization {
