@@ -1244,4 +1244,9 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
     pub fn tx_table(&self) -> &TransactionTable {
         &self.tx_table
     }
+
+    /// Returns the block_time for a given block height, if the block is in the wallet's cache
+    pub fn get_block_time(&self, height: BlockHeight) -> Option<u32> {
+        self.blocks.get(&height).map(|block| block.block_time)
+    }
 }
