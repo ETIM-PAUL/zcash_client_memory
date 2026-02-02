@@ -217,13 +217,14 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
             .map(|account| (account.account_id(), AccountBalance::ZERO))
             .collect::<HashMap<AccountId, AccountBalance>>();
 
+        let unscanned = self.unscanned_ranges();
         for note in self.get_received_notes().iter() {
             // don't count spent notes
             if self.note_is_spent(note, target_height)? {
                 continue;
             }
             // don't count notes in unscanned ranges
-            let in_unscanned = self.unscanned_ranges().iter().any(
+            let in_unscanned = unscanned.iter().any(
                 |(_, _, start_position, end_position_exclusive)| {
                     note.commitment_tree_position >= *start_position
                         && note.commitment_tree_position < *end_position_exclusive

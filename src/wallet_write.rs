@@ -323,7 +323,7 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
 
                 // Mark the Sapling nullifiers of the spent notes as spent in the `sapling_spends` map.
                 for spend in transaction.sapling_spends() {
-                    println!(
+                    tracing::debug!(
                         "marking note {:?} as spent in transaction {:?}",
                         spend.nf(),
                         txid

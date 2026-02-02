@@ -49,10 +49,22 @@ impl Deref for ReceievedNoteSpends {
     }
 }
 
-/// A note that has been received by the wallet
-/// TODO: Instead of Vec, perhaps we should identify by some unique ID
-#[derive(Debug, Clone, PartialEq)]
-pub struct ReceivedNoteTable(pub(crate) Vec<ReceivedNote>);
+/// A note that has been received by the wallet, with O(1) lookup indexes.
+#[derive(Debug, Clone)]
+pub struct ReceivedNoteTable {
+    pub(crate) notes: Vec<ReceivedNote>,
+    /// Maps nullifier → index in `notes` for O(1) nullifier lookups
+    nullifier_index: BTreeMap<Nullifier, usize>,
+    /// Maps note_id → index in `notes` for O(1) note_id lookups (upsert)
+    note_id_index: BTreeMap<NoteId, usize>,
+}
+
+impl PartialEq for ReceivedNoteTable {
+    fn eq(&self, other: &Self) -> bool {
+        // Indexes are derived state; only compare the notes themselves
+        self.notes == other.notes
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReceivedNote {
@@ -254,13 +266,34 @@ impl From<ReceivedNote>
 
 impl ReceivedNoteTable {
     pub fn new() -> Self {
-        Self(Vec::new())
+        Self {
+            notes: Vec::new(),
+            nullifier_index: BTreeMap::new(),
+            note_id_index: BTreeMap::new(),
+        }
+    }
+
+    /// Construct from a Vec of notes, rebuilding all indexes.
+    pub(crate) fn from_notes(notes: Vec<ReceivedNote>) -> Self {
+        let mut nullifier_index = BTreeMap::new();
+        let mut note_id_index = BTreeMap::new();
+        for (i, note) in notes.iter().enumerate() {
+            note_id_index.insert(note.note_id, i);
+            if let Some(nf) = note.nf {
+                nullifier_index.insert(nf, i);
+            }
+        }
+        Self {
+            notes,
+            nullifier_index,
+            note_id_index,
+        }
     }
 
     pub fn get_sapling_nullifiers(
         &self,
     ) -> impl Iterator<Item = (AccountId, TxId, sapling::Nullifier)> + '_ {
-        self.0.iter().filter_map(|entry| {
+        self.notes.iter().filter_map(|entry| {
             if let Some(Nullifier::Sapling(nf)) = entry.nullifier() {
                 Some((entry.account_id(), entry.txid(), *nf))
             } else {
@@ -272,7 +305,7 @@ impl ReceivedNoteTable {
     pub fn get_orchard_nullifiers(
         &self,
     ) -> impl Iterator<Item = (AccountId, TxId, orchard::note::Nullifier)> + '_ {
-        self.0.iter().filter_map(|entry| {
+        self.notes.iter().filter_map(|entry| {
             if let Some(Nullifier::Orchard(nf)) = entry.nullifier() {
                 Some((entry.account_id(), entry.txid(), *nf))
             } else {
@@ -282,23 +315,44 @@ impl ReceivedNoteTable {
     }
 
     pub fn insert_received_note(&mut self, note: ReceivedNote) {
-        // ensure note_id is unique.
-        // follow upsert rules to update the note if it already exists
-        let is_absent = self
-            .0
-            .iter_mut()
-            .find(|n| n.note_id == note.note_id)
-            .map(|n| {
-                n.nf = note.nf.or(n.nf);
-                n.is_change = note.is_change || n.is_change;
-                n.commitment_tree_position =
-                    note.commitment_tree_position.or(n.commitment_tree_position);
-            })
-            .is_none();
-
-        if is_absent {
-            self.0.push(note);
+        // Check if note_id already exists via the index (O(1) lookup)
+        if let Some(&idx) = self.note_id_index.get(&note.note_id) {
+            // Upsert: update existing note
+            let existing = &mut self.notes[idx];
+            // If nullifier changed, update the nullifier index
+            let old_nf = existing.nf;
+            existing.nf = note.nf.or(existing.nf);
+            existing.is_change = note.is_change || existing.is_change;
+            existing.commitment_tree_position =
+                note.commitment_tree_position.or(existing.commitment_tree_position);
+            // Update nullifier index if it changed
+            if existing.nf != old_nf {
+                if let Some(old) = old_nf {
+                    self.nullifier_index.remove(&old);
+                }
+                if let Some(new) = existing.nf {
+                    self.nullifier_index.insert(new, idx);
+                }
+            }
+        } else {
+            // Insert new note
+            let idx = self.notes.len();
+            self.note_id_index.insert(note.note_id, idx);
+            if let Some(nf) = note.nf {
+                self.nullifier_index.insert(nf, idx);
+            }
+            self.notes.push(note);
         }
+    }
+
+    /// O(1) lookup of a note by its nullifier
+    pub(crate) fn find_by_nullifier(&self, nf: &Nullifier) -> Option<&ReceivedNote> {
+        self.nullifier_index.get(nf).map(|&idx| &self.notes[idx])
+    }
+
+    /// O(1) lookup of a note by its NoteId
+    pub(crate) fn find_by_note_id(&self, note_id: &NoteId) -> Option<&ReceivedNote> {
+        self.note_id_index.get(note_id).map(|&idx| &self.notes[idx])
     }
 
     #[cfg(feature = "orchard")]
@@ -307,13 +361,10 @@ impl ReceivedNoteTable {
         nfs: impl Iterator<Item = &'a orchard::note::Nullifier>,
     ) -> Result<BTreeSet<AccountId>, Error> {
         let mut acc = BTreeSet::new();
-        let nfs = nfs.collect::<Vec<_>>();
-        for (nf, id) in self.0.iter().filter_map(|n| match (n.nf, n.account_id) {
-            (Some(Nullifier::Orchard(nf)), account_id) => Some((nf, account_id)),
-            _ => None,
-        }) {
-            if nfs.contains(&&nf) {
-                acc.insert(id);
+        for nf in nfs {
+            let key = Nullifier::Orchard(*nf);
+            if let Some(note) = self.find_by_nullifier(&key) {
+                acc.insert(note.account_id());
             }
         }
         Ok(acc)
@@ -324,13 +375,10 @@ impl ReceivedNoteTable {
         nfs: impl Iterator<Item = &'a sapling::Nullifier>,
     ) -> Result<BTreeSet<AccountId>, Error> {
         let mut acc = BTreeSet::new();
-        let nfs = nfs.collect::<Vec<_>>();
-        for (nf, id) in self.0.iter().filter_map(|n| match (n.nf, n.account_id) {
-            (Some(Nullifier::Sapling(nf)), account_id) => Some((nf, account_id)),
-            _ => None,
-        }) {
-            if nfs.contains(&&nf) {
-                acc.insert(id);
+        for nf in nfs {
+            let key = Nullifier::Sapling(*nf);
+            if let Some(note) = self.find_by_nullifier(&key) {
+                acc.insert(note.account_id());
             }
         }
         Ok(acc)
@@ -342,12 +390,12 @@ impl Deref for ReceivedNoteTable {
     type Target = [ReceivedNote];
 
     fn deref(&self) -> &Self::Target {
-        &self.0[..]
+        &self.notes[..]
     }
 }
 impl DerefMut for ReceivedNoteTable {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0[..]
+        &mut self.notes[..]
     }
 }
 

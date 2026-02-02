@@ -86,7 +86,7 @@ impl<P: Parameters> MemoryWalletDb<P> {
                 .collect::<Result<_>>()?,
         );
 
-        wallet.received_notes = ReceivedNoteTable(
+        wallet.received_notes = ReceivedNoteTable::from_notes(
             proto_wallet
                 .received_note_table
                 .into_iter()

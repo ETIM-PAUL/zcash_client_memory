@@ -393,10 +393,8 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
         &self.received_notes
     }
 
-    // TODO: Update this if we switch from using a vec to store received notes to
-    // someething with more efficient lookups
     pub(crate) fn get_received_note(&self, note_id: NoteId) -> Option<&ReceivedNote> {
-        self.received_notes.iter().find(|v| v.note_id() == note_id)
+        self.received_notes.find_by_note_id(&note_id)
     }
 
     pub(crate) fn mark_sapling_note_spent(
@@ -406,10 +404,8 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
     ) -> Result<(), Error> {
         let note_id = self
             .received_notes
-            .iter()
-            .filter(|v| v.nullifier() == Some(&Nullifier::Sapling(nf)))
-            .map(|v| v.note_id())
-            .next()
+            .find_by_nullifier(&Nullifier::Sapling(nf))
+            .map(|n| n.note_id())
             .ok_or(Error::NoteNotFound)?;
         self.received_note_spends.insert_spend(note_id, txid);
         Ok(())
@@ -569,10 +565,8 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
     ) -> Result<(), Error> {
         let note_id = self
             .received_notes
-            .iter()
-            .filter(|v| v.nullifier() == Some(&Nullifier::Orchard(nf)))
-            .map(|v| v.note_id())
-            .next()
+            .find_by_nullifier(&Nullifier::Orchard(nf))
+            .map(|n| n.note_id())
             .ok_or(Error::NoteNotFound)?;
         self.received_note_spends.insert_spend(note_id, txid);
         Ok(())
