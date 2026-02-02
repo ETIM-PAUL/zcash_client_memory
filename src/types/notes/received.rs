@@ -456,6 +456,195 @@ pub(crate) fn to_spendable_notes(
     ))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use incrementalmerkletree::Position;
+    use zcash_client_backend::wallet::Note;
+    use zcash_primitives::transaction::TxId;
+    use zcash_protocol::ShieldedProtocol::Sapling;
+
+    /// Known-valid sapling PaymentAddress bytes (from mod.rs serialization test).
+    const VALID_PA_BYTES: [u8; 43] = [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x8e, 0x11,
+        0x9d, 0x72, 0x99, 0x2b, 0x56, 0x0d, 0x26, 0x50, 0xff, 0xe0, 0xbe, 0x7f, 0x35, 0x42,
+        0xfd, 0x97, 0x00, 0x3c, 0xb7, 0xcc, 0x3a, 0xbf, 0xf8, 0x1a, 0x7f, 0x90, 0x37, 0xf3,
+        0xea,
+    ];
+
+    fn make_test_note(
+        txid_byte: u8,
+        output_index: u16,
+        account_id: u32,
+        nullifier_bytes: Option<u8>,
+    ) -> ReceivedNote {
+        let txid = TxId::from_bytes([txid_byte; 32]);
+        let note_id = NoteId::new(txid, Sapling, output_index);
+        let pa = sapling::PaymentAddress::from_bytes(&VALID_PA_BYTES).unwrap();
+        let sapling_note = sapling::Note::from_parts(
+            pa,
+            sapling::value::NoteValue::from_raw(1000),
+            sapling::Rseed::AfterZip212([0; 32]),
+        );
+        let nf = nullifier_bytes.map(|b| {
+            Nullifier::Sapling(sapling::Nullifier::from_slice(&[b; 32]).unwrap())
+        });
+
+        ReceivedNote {
+            note_id,
+            txid,
+            output_index: output_index as u32,
+            account_id: AccountId::from(account_id),
+            note: Note::Sapling(sapling_note),
+            nf,
+            is_change: false,
+            memo: Memo::Empty,
+            commitment_tree_position: Some(Position::from(0u64)),
+            recipient_key_scope: Some(Scope::External),
+        }
+    }
+
+    #[test]
+    fn test_new_is_empty() {
+        let table = ReceivedNoteTable::new();
+        assert!(table.notes.is_empty());
+        assert!(table.nullifier_index.is_empty());
+        assert!(table.note_id_index.is_empty());
+    }
+
+    #[test]
+    fn test_insert_and_find_by_note_id() {
+        let mut table = ReceivedNoteTable::new();
+        let note = make_test_note(0x01, 0, 1, Some(0xAA));
+        let note_id = note.note_id;
+
+        table.insert_received_note(note);
+
+        let found = table.find_by_note_id(&note_id).unwrap();
+        assert_eq!(found.note_id, note_id);
+        assert_eq!(found.account_id, AccountId::from(1));
+    }
+
+    #[test]
+    fn test_insert_and_find_by_nullifier() {
+        let mut table = ReceivedNoteTable::new();
+        let note = make_test_note(0x02, 0, 2, Some(0xBB));
+        let nf = note.nf.unwrap();
+
+        table.insert_received_note(note);
+
+        let found = table.find_by_nullifier(&nf).unwrap();
+        assert_eq!(found.account_id, AccountId::from(2));
+    }
+
+    #[test]
+    fn test_find_missing_returns_none() {
+        let table = ReceivedNoteTable::new();
+        let missing_nf = Nullifier::Sapling(sapling::Nullifier::from_slice(&[0xFF; 32]).unwrap());
+        assert!(table.find_by_nullifier(&missing_nf).is_none());
+    }
+
+    #[test]
+    fn test_upsert_updates_existing() {
+        let mut table = ReceivedNoteTable::new();
+        let note1 = make_test_note(0x03, 0, 3, Some(0xCC));
+        let note_id = note1.note_id;
+
+        table.insert_received_note(note1);
+        assert_eq!(table.notes.len(), 1);
+        assert!(!table.find_by_note_id(&note_id).unwrap().is_change);
+
+        // Upsert same note_id with is_change = true
+        let mut note2 = make_test_note(0x03, 0, 3, Some(0xCC));
+        note2.is_change = true;
+        table.insert_received_note(note2);
+
+        // Length unchanged, is_change merged via OR
+        assert_eq!(table.notes.len(), 1);
+        assert!(table.find_by_note_id(&note_id).unwrap().is_change);
+    }
+
+    #[test]
+    fn test_upsert_adds_nullifier_to_index() {
+        let mut table = ReceivedNoteTable::new();
+        // Insert without nullifier
+        let note1 = make_test_note(0x04, 0, 4, None);
+        let note_id = note1.note_id;
+        table.insert_received_note(note1);
+
+        assert!(table.find_by_note_id(&note_id).unwrap().nf.is_none());
+        assert!(table.nullifier_index.is_empty());
+
+        // Upsert with nullifier
+        let note2 = make_test_note(0x04, 0, 4, Some(0xDD));
+        let nf = note2.nf.unwrap();
+        table.insert_received_note(note2);
+
+        // Nullifier index now populated
+        assert_eq!(table.notes.len(), 1);
+        assert!(table.find_by_nullifier(&nf).is_some());
+        assert_eq!(table.find_by_note_id(&note_id).unwrap().nf, Some(nf));
+    }
+
+    #[test]
+    fn test_from_notes_rebuilds_indexes() {
+        let notes = vec![
+            make_test_note(0x05, 0, 5, Some(0xEE)),
+            make_test_note(0x06, 1, 6, None),
+            make_test_note(0x07, 2, 7, Some(0xFF)),
+        ];
+        let nf0 = notes[0].nf.unwrap();
+        let nf2 = notes[2].nf.unwrap();
+        let id0 = notes[0].note_id;
+        let id1 = notes[1].note_id;
+        let id2 = notes[2].note_id;
+
+        let table = ReceivedNoteTable::from_notes(notes);
+
+        assert_eq!(table.notes.len(), 3);
+        // note_id index works
+        assert!(table.find_by_note_id(&id0).is_some());
+        assert!(table.find_by_note_id(&id1).is_some());
+        assert!(table.find_by_note_id(&id2).is_some());
+        // nullifier index works (only 2 entries, middle note has no nf)
+        assert_eq!(table.nullifier_index.len(), 2);
+        assert!(table.find_by_nullifier(&nf0).is_some());
+        assert!(table.find_by_nullifier(&nf2).is_some());
+    }
+
+    #[test]
+    fn test_detect_sapling_spending_accounts() {
+        let mut table = ReceivedNoteTable::new();
+        table.insert_received_note(make_test_note(0x10, 0, 10, Some(0xA1)));
+        table.insert_received_note(make_test_note(0x11, 1, 11, Some(0xA2)));
+        table.insert_received_note(make_test_note(0x12, 2, 12, Some(0xA3)));
+
+        let nf1 = sapling::Nullifier::from_slice(&[0xA1; 32]).unwrap();
+        let nf3 = sapling::Nullifier::from_slice(&[0xA3; 32]).unwrap();
+
+        let accounts = table
+            .detect_sapling_spending_accounts([nf1, nf3].iter())
+            .unwrap();
+
+        assert_eq!(accounts.len(), 2);
+        assert!(accounts.contains(&AccountId::from(10)));
+        assert!(accounts.contains(&AccountId::from(12)));
+    }
+
+    #[test]
+    fn test_detect_spending_accounts_unknown_nf() {
+        let mut table = ReceivedNoteTable::new();
+        table.insert_received_note(make_test_note(0x20, 0, 20, Some(0xB1)));
+
+        let unknown = sapling::Nullifier::from_slice(&[0xFF; 32]).unwrap();
+        let accounts = table
+            .detect_sapling_spending_accounts([unknown].iter())
+            .unwrap();
+
+        assert!(accounts.is_empty());
+    }
+}
+
 mod serialization {
     use super::*;
     use crate::{proto::memwallet as proto, read_optional};
