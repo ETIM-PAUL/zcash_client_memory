@@ -53,7 +53,7 @@ static_assertions = "1"
 
 # - Transparent protocol
 secp256k1 = {version = "0.29", default-features = false, features = ["alloc"], optional = true}
-sapling = {package = "sapling-crypto", version = "0.6", default-features = false}
+sapling = {package = "sapling-crypto", version = "0.6.2", default-features = false}
 
 # - Note commitment trees
 zcash_script = {version = "0.4.3", default-features = false}
@@ -139,17 +139,17 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 [workspace]
 
 [patch.crates-io]
-equihash = {git = "https://github.com/zcash/librustzcash", rev = "37488570331f635f775111afe4e6237d9d6933ef"}
-zcash_address = {git = "https://github.com/zcash/librustzcash", rev = "37488570331f635f775111afe4e6237d9d6933ef"}
-zcash_client_backend = {git = "https://github.com/zcash/librustzcash", rev = "37488570331f635f775111afe4e6237d9d6933ef"}
-zcash_encoding = {git = "https://github.com/zcash/librustzcash", rev = "37488570331f635f775111afe4e6237d9d6933ef"}
-zcash_keys = {git = "https://github.com/zcash/librustzcash", rev = "37488570331f635f775111afe4e6237d9d6933ef"}
-zcash_protocol = {git = "https://github.com/zcash/librustzcash", rev = "37488570331f635f775111afe4e6237d9d6933ef"}
-zip321 = {git = "https://github.com/zcash/librustzcash", rev = "37488570331f635f775111afe4e6237d9d6933ef"}
-zcash_primitives = {git = "https://github.com/zcash/librustzcash", rev = "37488570331f635f775111afe4e6237d9d6933ef"}
-zcash_proofs = {git = "https://github.com/zcash/librustzcash", rev = "37488570331f635f775111afe4e6237d9d6933ef"}
-pczt = {git = "https://github.com/zcash/librustzcash", rev = "37488570331f635f775111afe4e6237d9d6933ef"}
-zcash_transparent = {git = "https://github.com/zcash/librustzcash", rev = "37488570331f635f775111afe4e6237d9d6933ef"}
+equihash = {git = "https://github.com/zcash/librustzcash", rev = "84eb691d623e0d65cdf079f75981e89441dd7a85"}
+zcash_address = {git = "https://github.com/zcash/librustzcash", rev = "84eb691d623e0d65cdf079f75981e89441dd7a85"}
+zcash_client_backend = {git = "https://github.com/zcash/librustzcash", rev = "84eb691d623e0d65cdf079f75981e89441dd7a85"}
+zcash_encoding = {git = "https://github.com/zcash/librustzcash", rev = "84eb691d623e0d65cdf079f75981e89441dd7a85"}
+zcash_keys = {git = "https://github.com/zcash/librustzcash", rev = "84eb691d623e0d65cdf079f75981e89441dd7a85"}
+zcash_protocol = {git = "https://github.com/zcash/librustzcash", rev = "84eb691d623e0d65cdf079f75981e89441dd7a85"}
+zip321 = {git = "https://github.com/zcash/librustzcash", rev = "84eb691d623e0d65cdf079f75981e89441dd7a85"}
+zcash_primitives = {git = "https://github.com/zcash/librustzcash", rev = "84eb691d623e0d65cdf079f75981e89441dd7a85"}
+zcash_proofs = {git = "https://github.com/zcash/librustzcash", rev = "84eb691d623e0d65cdf079f75981e89441dd7a85"}
+pczt = {git = "https://github.com/zcash/librustzcash", rev = "84eb691d623e0d65cdf079f75981e89441dd7a85"}
+zcash_transparent = {git = "https://github.com/zcash/librustzcash", rev = "84eb691d623e0d65cdf079f75981e89441dd7a85"}
 
 [profile.release]
 lto = true
