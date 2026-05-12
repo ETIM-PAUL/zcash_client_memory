@@ -138,17 +138,17 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 [workspace]
 
 [patch.crates-io]
-equihash = {git = "https://github.com/zcash/librustzcash", rev = "3efabf304eefb4222cb07f5710603c63d498b94e"}
-zcash_address = {git = "https://github.com/zcash/librustzcash", rev = "3efabf304eefb4222cb07f5710603c63d498b94e"}
-zcash_client_backend = {git = "https://github.com/zcash/librustzcash", rev = "3efabf304eefb4222cb07f5710603c63d498b94e"}
-zcash_encoding = {git = "https://github.com/zcash/librustzcash", rev = "3efabf304eefb4222cb07f5710603c63d498b94e"}
-zcash_keys = {git = "https://github.com/zcash/librustzcash", rev = "3efabf304eefb4222cb07f5710603c63d498b94e"}
-zcash_protocol = {git = "https://github.com/zcash/librustzcash", rev = "3efabf304eefb4222cb07f5710603c63d498b94e"}
-zip321 = {git = "https://github.com/zcash/librustzcash", rev = "3efabf304eefb4222cb07f5710603c63d498b94e"}
-zcash_primitives = {git = "https://github.com/zcash/librustzcash", rev = "3efabf304eefb4222cb07f5710603c63d498b94e"}
-zcash_proofs = {git = "https://github.com/zcash/librustzcash", rev = "3efabf304eefb4222cb07f5710603c63d498b94e"}
-pczt = {git = "https://github.com/zcash/librustzcash", rev = "3efabf304eefb4222cb07f5710603c63d498b94e"}
-zcash_transparent = {git = "https://github.com/zcash/librustzcash", rev = "3efabf304eefb4222cb07f5710603c63d498b94e"}
+equihash = {git = "https://github.com/zcash/librustzcash", rev = "eb72011610dc1a87c026e94d0f40996f8e6e5b15"}
+zcash_address = {git = "https://github.com/zcash/librustzcash", rev = "eb72011610dc1a87c026e94d0f40996f8e6e5b15"}
+zcash_client_backend = {git = "https://github.com/zcash/librustzcash", rev = "eb72011610dc1a87c026e94d0f40996f8e6e5b15"}
+zcash_encoding = {git = "https://github.com/zcash/librustzcash", rev = "eb72011610dc1a87c026e94d0f40996f8e6e5b15"}
+zcash_keys = {git = "https://github.com/zcash/librustzcash", rev = "eb72011610dc1a87c026e94d0f40996f8e6e5b15"}
+zcash_protocol = {git = "https://github.com/zcash/librustzcash", rev = "eb72011610dc1a87c026e94d0f40996f8e6e5b15"}
+zip321 = {git = "https://github.com/zcash/librustzcash", rev = "eb72011610dc1a87c026e94d0f40996f8e6e5b15"}
+zcash_primitives = {git = "https://github.com/zcash/librustzcash", rev = "eb72011610dc1a87c026e94d0f40996f8e6e5b15"}
+zcash_proofs = {git = "https://github.com/zcash/librustzcash", rev = "eb72011610dc1a87c026e94d0f40996f8e6e5b15"}
+pczt = {git = "https://github.com/zcash/librustzcash", rev = "eb72011610dc1a87c026e94d0f40996f8e6e5b15"}
+zcash_transparent = {git = "https://github.com/zcash/librustzcash", rev = "eb72011610dc1a87c026e94d0f40996f8e6e5b15"}
 
 [profile.release]
 lto = true
