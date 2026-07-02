@@ -11,6 +11,30 @@ This crate was extracted from the
 [librustzcash](https://github.com/zcash/librustzcash) workspace, where it was
 developed as the `zcash_client_memory` member crate.
 
+## redbridge fork — NU6.2
+
+This branch (`feat/snap-nu62`) is redbridge's maintainer fork of the standalone
+crate, carrying ChainSafe's WebZjs Snap patches (originally authored against the
+NU6.1 librustzcash fork) rebased onto the upstream standalone repository for the
+NU6.2 upgrade.
+
+- **Base:** upstream `zcash/zcash_client_memory` @ `ce94a19` ("Set up standalone
+  repository").
+- **Applied on top:** ChainSafe's 10 patch commits (`list_addresses`,
+  `get_transparent_address_metadata`, `TransparentKeyScope` serialization,
+  transaction-history accessors, sync optimisations, and test coverage). These
+  fix panics and expose accessors the web wallet needs; upstream has not
+  upstreamed them.
+- **Consensus/crypto pin:** the `[patch.crates-io]` directives pin the
+  librustzcash family to rev `97416db85512d7aa81d7f48a93f78d097bffd6b8`, which
+  carries the NU6.2 consensus change (`Nu6_2 = 0x5437_f330`; mainnet activation
+  3,364,600, testnet 4,052,000). Consumers of this fork **must** pin the same
+  rev in their own root `[patch.crates-io]`, or cargo will build two copies of
+  `zcash_primitives` and fail with trait mismatches.
+
+The NU6.2-specific consumer changes (the `orchard 0.14` bump and the matching
+`[patch.crates-io]` block) live in the consuming workspace, not in this crate.
+
 ## Dependencies
 
 This crate depends on several crates that are developed in the librustzcash
