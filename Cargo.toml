@@ -59,7 +59,7 @@ sapling = {package = "sapling-crypto", version = "0.7", default-features = false
 zcash_script = {version = "0.4.3", default-features = false}
 shardtree = {version = "0.6.2", features = ["legacy-api"]}
 
-thiserror = "1.0.61"
+thiserror = "2.0.12"
 incrementalmerkletree = {version = "0.8.2", default-features = false}
 async-trait = { version = "0.1" }
 
