@@ -42,7 +42,7 @@ jubjub = "0.10"
 
 # - Secret management
 serde = {version = "1", default-features = false, features = ["derive"]}
-secrecy = "0.8"
+secrecy = "0.10"
 
 # - Static assertions
 subtle = {version = "2.2.3", default-features = false}
