@@ -126,7 +126,19 @@ mod serialization {
                         &rho,
                     )
                     .unwrap();
-                    Self::Orchard(orchard::Note::from_parts(recipient, value, rho, rseed).unwrap())
+                    // orchard 0.15 (NU6.3) adds a note-plaintext version: V2 = Orchard,
+                    // V3 = Ironwood. Notes persisted under the old proto (no version field)
+                    // are Orchard-pool notes, so reconstruct them as V2.
+                    Self::Orchard(
+                        orchard::Note::from_parts(
+                            recipient,
+                            value,
+                            rho,
+                            rseed,
+                            orchard::note::NoteVersion::V2,
+                        )
+                        .unwrap(),
+                    )
                 }
                 #[cfg(not(feature = "orchard"))]
                 _ => panic!("invalid protocol"),
