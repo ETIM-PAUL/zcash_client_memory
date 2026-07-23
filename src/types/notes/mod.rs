@@ -32,6 +32,11 @@ mod serialization {
                     zcash_protocol::ShieldedProtocol::Orchard => panic!(
                         "Attempting to deserialize orchard supporting wallet using library built without orchard feature"
                     ),
+                    // The in-memory backend does not scan or store Ironwood (NU6.3) notes, so no
+                    // Ironwood NoteId is ever produced to be serialized here.
+                    zcash_protocol::ShieldedProtocol::Ironwood => unreachable!(
+                        "the in-memory backend does not track Ironwood notes"
+                    ),
                 },
                 output_index: u32::from(note_id.output_index()),
             }
@@ -74,7 +79,7 @@ mod serialization {
                     rho: None,
                 },
                 #[cfg(feature = "orchard")]
-                Note::Orchard(note) => Self {
+                Note::Orchard { note, .. } => Self {
                     protocol: proto::ShieldedProtocol::Orchard.into(),
                     recipient: note.recipient().to_raw_address_bytes().to_vec(),
                     value: note.value().inner(),
@@ -129,8 +134,8 @@ mod serialization {
                     // orchard 0.15 (NU6.3) adds a note-plaintext version: V2 = Orchard,
                     // V3 = Ironwood. Notes persisted under the old proto (no version field)
                     // are Orchard-pool notes, so reconstruct them as V2.
-                    Self::Orchard(
-                        orchard::Note::from_parts(
+                    Self::Orchard {
+                        note: orchard::Note::from_parts(
                             recipient,
                             value,
                             rho,
@@ -138,7 +143,8 @@ mod serialization {
                             orchard::note::NoteVersion::V2,
                         )
                         .unwrap(),
-                    )
+                        pool: orchard::ValuePool::Orchard,
+                    }
                 }
                 #[cfg(not(feature = "orchard"))]
                 _ => panic!("invalid protocol"),

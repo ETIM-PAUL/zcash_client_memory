@@ -823,6 +823,10 @@ mod serialization {
                 read_frontier_v1(&cs.final_sapling_tree[..])?,
                 #[cfg(feature = "orchard")]
                 read_frontier_v1(&cs.final_orchard_tree[..])?,
+                // The in-memory backend does not persist an Ironwood (NU6.3) note commitment
+                // frontier, so its chain state is reconstructed as an empty Ironwood tree.
+                #[cfg(feature = "orchard")]
+                incrementalmerkletree::frontier::Frontier::empty(),
             );
 
             let recover_until = birthday.recover_until.map(|r| r.into());

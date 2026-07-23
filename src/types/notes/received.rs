@@ -8,7 +8,7 @@ use std::{
 use zip32::Scope;
 
 use zcash_primitives::transaction::TxId;
-use zcash_protocol::{PoolType, ShieldedProtocol::Sapling, memo::Memo};
+use zcash_protocol::{PoolType, ShieldedPool::Sapling, memo::Memo};
 
 use zcash_client_backend::{
     data_api::{ReceivedNotes, SentTransactionOutput},
@@ -20,7 +20,7 @@ use crate::AccountId;
 
 #[cfg(feature = "orchard")]
 use {
-    zcash_client_backend::wallet::WalletOrchardOutput, zcash_protocol::ShieldedProtocol::Orchard,
+    zcash_client_backend::wallet::WalletOrchardOutput, zcash_protocol::ShieldedPool::Orchard,
 };
 
 use crate::{Nullifier, error::Error};
@@ -115,7 +115,7 @@ impl ReceivedNote {
         output: &SentTransactionOutput<AccountId>,
     ) -> Result<Self, Error> {
         match output.recipient() {
-            Recipient::InternalAccount {
+            Recipient::InternalShielded {
                 receiving_account,
                 note,
                 ..
@@ -137,12 +137,15 @@ impl ReceivedNote {
                     recipient_key_scope: Some(Scope::Internal),
                 }),
                 #[cfg(feature = "orchard")]
-                Note::Orchard(note) => Ok(ReceivedNote {
+                Note::Orchard { note, pool } => Ok(ReceivedNote {
                     note_id: NoteId::new(txid, Orchard, output.output_index() as u16),
                     txid,
                     output_index: output.output_index() as u32,
                     account_id: *receiving_account,
-                    note: Note::Orchard(*note),
+                    note: Note::Orchard {
+                        note: *note,
+                        pool: *pool,
+                    },
                     nf: None,
                     is_change: true,
                     memo: output
@@ -186,7 +189,12 @@ impl ReceivedNote {
             txid: *note_id.txid(),
             output_index: output.index() as u32,
             account_id: *output.account_id(),
-            note: Note::Orchard(*output.note()),
+            // A `WalletOrchardOutput` now carries a (note, value_pool) tuple; preserve the value
+            // pool recorded for the output.
+            note: Note::Orchard {
+                note: output.note().0,
+                pool: output.note().1,
+            },
             nf: output.nf().map(|nf| Nullifier::Orchard(*nf)),
             is_change: output.is_change(),
             memo: Memo::Empty,
@@ -227,7 +235,7 @@ impl ReceivedNote {
     #[cfg(feature = "orchard")]
     pub fn from_decrypted_orchard_output(
         txid: TxId,
-        output: &DecryptedOutput<orchard::note::Note, AccountId>,
+        output: &DecryptedOutput<(orchard::Note, orchard::ValuePool), AccountId>,
     ) -> Result<Self, Error> {
         let note_id = NoteId::new(txid, Orchard, output.index() as u16);
         let memo = Memo::try_from(output.memo().clone())?;
@@ -237,7 +245,12 @@ impl ReceivedNote {
             txid,
             output_index: output.index() as u32,
             account_id: *output.account(),
-            note: Note::Orchard(*output.note()),
+            // Orchard-family decrypted outputs carry a (note, value_pool) tuple; preserve the
+            // value pool recorded by trial decryption.
+            note: Note::Orchard {
+                note: output.note().0,
+                pool: output.note().1,
+            },
             nf: None, // Nullifier not yet known for incoming unspent notes
             is_change: false, // Incoming notes are not change
             memo,
@@ -430,7 +443,7 @@ pub(crate) fn to_spendable_notes(
     let orchard = orchard_received_notes
         .iter()
         .map(|note| {
-            if let Note::Orchard(inner) = &note.note {
+            if let Note::Orchard { note: inner, .. } = &note.note {
                 Ok(zcash_client_backend::wallet::ReceivedNote::from_parts(
                     note.note_id,
                     note.txid(),
@@ -453,6 +466,10 @@ pub(crate) fn to_spendable_notes(
         sapling,
         #[cfg(feature = "orchard")]
         orchard,
+        // The in-memory backend does not track Ironwood (NU6.3) notes, so there are none to
+        // return as spendable inputs.
+        #[cfg(feature = "orchard")]
+        Vec::new(),
     ))
 }
 
@@ -462,7 +479,7 @@ mod tests {
     use incrementalmerkletree::Position;
     use zcash_client_backend::wallet::Note;
     use zcash_primitives::transaction::TxId;
-    use zcash_protocol::ShieldedProtocol::Sapling;
+    use zcash_protocol::ShieldedPool::Sapling;
 
     /// Known-valid sapling PaymentAddress bytes (from mod.rs serialization test).
     const VALID_PA_BYTES: [u8; 43] = [

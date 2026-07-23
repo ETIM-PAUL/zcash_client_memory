@@ -29,7 +29,7 @@ use zcash_client_backend::{
 use zcash_primitives::transaction::Transaction;
 use zcash_protocol::{
     PoolType,
-    ShieldedProtocol::{self, Sapling},
+    ShieldedPool::{self as ShieldedProtocol, Sapling},
     TxId,
     consensus::{self, BlockHeight, NetworkUpgrade},
 };
@@ -44,7 +44,7 @@ use crate::{
 use {
     shardtree::error::ShardTreeError, std::collections::BTreeMap,
     zcash_client_backend::data_api::ORCHARD_SHARD_HEIGHT,
-    zcash_protocol::ShieldedProtocol::Orchard,
+    zcash_protocol::ShieldedPool::Orchard,
 };
 
 #[cfg(feature = "transparent-inputs")]
@@ -54,6 +54,19 @@ use {
         data_api::TransactionsInvolvingAddress, wallet::TransparentAddressMetadata,
     },
 };
+
+/// Returns the value of an Orchard-family decrypted output.
+///
+/// Orchard-family (`Orchard` and `Ironwood`) decrypted outputs now carry a `(note, value_pool)`
+/// tuple rather than a bare note, so the `DecryptedOutput::note_value` helper (which is only
+/// defined for bare-note payloads) does not apply; the value is read directly from the note.
+#[cfg(feature = "orchard")]
+fn orchard_decrypted_output_value<A>(
+    output: &zcash_client_backend::DecryptedOutput<(orchard::Note, orchard::ValuePool), A>,
+) -> zcash_protocol::value::Zatoshis {
+    zcash_protocol::value::Zatoshis::from_u64(output.note().0.value().inner())
+        .expect("Orchard note value is expected to have been validated by consensus.")
+}
 
 impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
     type UtxoRef = OutPoint;
@@ -685,7 +698,7 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                     );
                 }
                 TransferType::AccountInternal => {
-                    let recipient = Recipient::InternalAccount {
+                    let recipient = Recipient::InternalShielded {
                         receiving_account: *output.account(),
                         external_address: None,
                         note: Box::new(Note::Sapling(output.note().clone())),
@@ -732,7 +745,8 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
             match output.transfer_type() {
                 TransferType::Outgoing => {
                     let recipient = {
-                        let receiver = Receiver::Orchard(output.note().recipient());
+                        // Orchard-family decrypted outputs now carry a (note, value_pool) tuple.
+                        let receiver = Receiver::Orchard(output.note().0.recipient());
                         let wallet_address = self
                             .accounts
                             .get(*output.account())
@@ -754,7 +768,7 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                     let sent_tx_output = SentTransactionOutput::from_parts(
                         output.index(),
                         recipient,
-                        output.note_value(),
+                        orchard_decrypted_output_value(output),
                         Some(output.memo().clone()),
                     );
                     self.sent_notes.put_sent_output(
@@ -764,15 +778,18 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                     );
                 }
                 TransferType::AccountInternal => {
-                    let recipient = Recipient::InternalAccount {
+                    let recipient = Recipient::InternalShielded {
                         receiving_account: *output.account(),
                         external_address: None,
-                        note: Box::new(Note::Orchard(*output.note())),
+                        note: Box::new(Note::Orchard {
+                            note: output.note().0,
+                            pool: output.note().1,
+                        }),
                     };
                     let sent_tx_output = SentTransactionOutput::from_parts(
                         output.index(),
                         recipient,
-                        output.note_value(),
+                        orchard_decrypted_output_value(output),
                         Some(output.memo().clone()),
                     );
 
@@ -1179,7 +1196,7 @@ Instead derive the ufvk in the calling code and import it using `import_account_
                 self.sent_notes.insert_sent_output(sent_tx, output);
 
                 match output.recipient() {
-                    Recipient::InternalAccount { .. } => {
+                    Recipient::InternalShielded { .. } => {
                         self.received_notes.insert_received_note(
                             ReceivedNote::from_sent_tx_output(sent_tx.tx().txid(), output)?,
                         );

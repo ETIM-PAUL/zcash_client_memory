@@ -9,19 +9,19 @@ use zcash_client_backend::{
 };
 use zcash_primitives::transaction::Transaction;
 use zcash_protocol::{
-    ShieldedProtocol::{self, Sapling},
+    ShieldedPool::{self as ShieldedProtocol, Sapling},
     consensus::{self, BranchId},
     value::Zatoshis,
 };
 
 #[cfg(feature = "orchard")]
-use zcash_protocol::ShieldedProtocol::Orchard;
+use zcash_protocol::ShieldedPool::Orchard;
 
 #[cfg(feature = "transparent-inputs")]
 use {
     ::transparent::{address::TransparentAddress, bundle::OutPoint},
     zcash_client_backend::{
-        data_api::{TransactionStatus, TransparentOutputFilter},
+        data_api::{CoinbaseFilter, TransactionStatus},
         wallet::WalletTransparentOutput,
     },
     zcash_protocol::consensus::BlockHeight,
@@ -50,7 +50,7 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
         Self::Error,
     > {
         let note = self.received_notes.iter().find(|rn| {
-            &rn.txid == txid && rn.note.protocol() == protocol && rn.output_index == index
+            &rn.txid == txid && rn.note.pool() == protocol && rn.output_index == index
         });
 
         Ok(if let Some(note) = note {
@@ -155,7 +155,7 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
         address: &TransparentAddress,
         target_height: TargetHeight,
         confirmations_policy: ConfirmationsPolicy,
-        output_filter: TransparentOutputFilter,
+        output_filter: CoinbaseFilter,
     ) -> Result<Vec<WalletTransparentOutput<AccountId>>, Self::Error> {
         // TODO: take into consideration coinbase maturity
         // See <https://github.com/zcash/librustzcash/issues/821>
@@ -169,12 +169,18 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
                     .unwrap_or(false)
             })
             .filter(|(_, _, tx)| match output_filter {
-                TransparentOutputFilter::All => true,
+                CoinbaseFilter::AllTransparentOutputs => true,
                 // Coinbase transactions have tx_index == 0. If tx_index is unknown
                 // (None), conservatively treat it as **non-coinbase**, matching the SQL
                 // implementation's IFNULL(tx_index, 1) == 0 behavior.
-                TransparentOutputFilter::CoinbaseOnly => {
+                CoinbaseFilter::CoinbaseOnly => {
                     tx.is_some_and(|tx| tx.tx_index().unwrap_or(1) == 0)
+                }
+                // Non-coinbase outputs only. Outputs whose tx_index is unknown are treated as
+                // non-coinbase and included, matching the SQL implementation's IFNULL(tx_index, 1)
+                // != 0 behavior.
+                CoinbaseFilter::NonCoinbaseOnly => {
+                    tx.map_or(true, |tx| tx.tx_index().unwrap_or(1) != 0)
                 }
             })
             .filter_map(|(outpoint, txo, tx)| {
@@ -242,7 +248,25 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
         #[cfg(not(feature = "orchard"))]
         let orchard_pool_meta = None;
 
-        Ok(AccountMeta::new(sapling_pool_meta, orchard_pool_meta))
+        // Ironwood is a distinct pool tracked separately from Orchard; mirror the Orchard
+        // metadata query against the Ironwood value pool.
+        #[cfg(feature = "orchard")]
+        let ironwood_pool_meta = self.spendable_notes_meta(
+            ShieldedProtocol::Ironwood,
+            account_id,
+            selector,
+            target_height,
+            confirmations_policy,
+            exclude,
+        )?;
+        #[cfg(not(feature = "orchard"))]
+        let ironwood_pool_meta = None;
+
+        Ok(AccountMeta::new(
+            sapling_pool_meta,
+            orchard_pool_meta,
+            ironwood_pool_meta,
+        ))
     }
 }
 
@@ -271,7 +295,7 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             .received_notes
             .iter()
             .filter(|note| note.account_id == account)
-            .filter(|note| note.note.protocol() == *pool)
+            .filter(|note| note.note.pool() == *pool)
             .filter(|note| {
                 self.note_is_spendable(
                     note,
@@ -377,7 +401,7 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             .received_notes
             .iter()
             .filter(|note| note.account_id == account)
-            .filter(|note| note.note.protocol() == protocol)
+            .filter(|note| note.note.pool() == protocol)
             .filter(|note| {
                 self.note_is_spendable(
                     note,

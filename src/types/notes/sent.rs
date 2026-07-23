@@ -5,12 +5,12 @@ use zcash_client_backend::{
     data_api::{SentTransaction, SentTransactionOutput},
     wallet::{NoteId, Recipient},
 };
-use zcash_protocol::{PoolType, ShieldedProtocol::Sapling, TxId, memo::Memo, value::Zatoshis};
+use zcash_protocol::{PoolType, ShieldedPool::Sapling, TxId, memo::Memo, value::Zatoshis};
 
 use crate::AccountId;
 
 #[cfg(feature = "orchard")]
-use zcash_protocol::ShieldedProtocol::Orchard;
+use zcash_protocol::ShieldedPool::Orchard;
 
 #[derive(PartialEq, PartialOrd, Eq, Ord, Debug, Clone)]
 pub enum SentNoteId {
@@ -58,7 +58,7 @@ impl SentNoteTable {
             Recipient::EphemeralTransparent { .. } => PoolType::Transparent,
             #[cfg(feature = "transparent-inputs")]
             Recipient::InternalTransparent { .. } => PoolType::Transparent,
-            Recipient::InternalAccount { note, .. } => PoolType::Shielded(note.protocol()),
+            Recipient::InternalShielded { note, .. } => PoolType::Shielded(note.pool()),
         };
         match pool_type {
             PoolType::Transparent => {
@@ -109,7 +109,7 @@ impl SentNoteTable {
             Recipient::EphemeralTransparent { .. } => PoolType::Transparent,
             #[cfg(feature = "transparent-inputs")]
             Recipient::InternalTransparent { .. } => PoolType::Transparent,
-            Recipient::InternalAccount { note, .. } => PoolType::Shielded(note.protocol()),
+            Recipient::InternalShielded { note, .. } => PoolType::Shielded(note.pool()),
         };
         match pool_type {
             PoolType::Transparent => {
@@ -230,6 +230,11 @@ mod serialization {
                     pool: match note_id.protocol() {
                         ShieldedProtocol::Sapling => proto::PoolType::ShieldedSapling as i32,
                         ShieldedProtocol::Orchard => proto::PoolType::ShieldedOrchard as i32,
+                        // The in-memory backend does not track Ironwood (NU6.3) notes, so no
+                        // Ironwood sent-note id is ever produced.
+                        ShieldedProtocol::Ironwood => unreachable!(
+                            "the in-memory backend does not track Ironwood notes"
+                        ),
                     },
                 },
                 SentNoteId::Transparent { txid, output_index } => proto::NoteId {
@@ -299,6 +304,11 @@ mod serialization {
                         PoolType::Shielded(Sapling) => proto::PoolType::ShieldedSapling,
                         #[cfg(feature = "orchard")]
                         PoolType::Shielded(Orchard) => proto::PoolType::ShieldedOrchard,
+                        // The in-memory backend does not send to the Ironwood (NU6.3) pool, so no
+                        // external Ironwood recipient is ever serialized.
+                        PoolType::Shielded(zcash_protocol::ShieldedPool::Ironwood) => {
+                            unreachable!("the in-memory backend does not produce Ironwood outputs")
+                        }
                         #[cfg(not(feature = "orchard"))]
                         _ => panic!("Orchard not enabled"),
                     } as i32),
@@ -336,7 +346,7 @@ mod serialization {
                     outpoint: None,
                     note: None,
                 },
-                Recipient::InternalAccount {
+                Recipient::InternalShielded {
                     receiving_account,
                     external_address,
                     note,
@@ -388,7 +398,7 @@ mod serialization {
                         outpoint: read_optional!(recipient, outpoint)?.try_into()?,
                     }
                 }
-                proto::RecipientType::InternalAccount => Recipient::InternalAccount {
+                proto::RecipientType::InternalAccount => Recipient::InternalShielded {
                     receiving_account: read_optional!(recipient, account_id)?.into(),
                     external_address: recipient.address.map(|a| a.parse()).transpose()?,
                     note: Box::new(read_optional!(recipient, note)?.into()),

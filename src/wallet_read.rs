@@ -286,10 +286,15 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
             let transparent_balances =
                 self.get_transparent_balances(*account, target_height, confirmations_policy)?;
             for (_, (_, bal)) in transparent_balances.into_iter() {
-                balance.with_unshielded_balance_mut(|b: &mut Balance| -> Result<(), Error> {
-                    *b = (*b + bal)?;
-                    Ok(())
-                })?;
+                // The in-memory backend does not distinguish coinbase transparent outputs; per the
+                // `CoinbaseFilter` contract, outputs of unknown coinbase status are conservatively
+                // classified as regular (non-coinbase) funds.
+                balance.with_unshielded_regular_balance_mut(
+                    |b: &mut Balance| -> Result<(), Error> {
+                        *b = (*b + bal)?;
+                        Ok(())
+                    },
+                )?;
             }
         }
 
@@ -339,6 +344,10 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
             next_sapling_subtree_index,
             #[cfg(feature = "orchard")]
             next_orchard_subtree_index,
+            // The in-memory backend maintains no separate Ironwood (NU6.3) note commitment tree,
+            // so no Ironwood subtrees have been scanned; the next index is the initial 0.
+            #[cfg(feature = "orchard")]
+            0,
         );
         Ok(Some(summary))
     }
@@ -381,6 +390,10 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                 *sapling_commitment_tree_size,
                 #[cfg(feature = "orchard")]
                 *orchard_commitment_tree_size,
+                // The in-memory backend does not track an Ironwood (NU6.3) note commitment tree, so
+                // its size is unknown for every block.
+                #[cfg(feature = "orchard")]
+                None,
             )
         }))
     }
@@ -648,6 +661,18 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                 })
                 .collect(),
         })
+    }
+
+    #[cfg(feature = "orchard")]
+    fn get_ironwood_nullifiers(
+        &self,
+        _query: NullifierQuery,
+    ) -> Result<Vec<(Self::AccountId, orchard::note::Nullifier)>, Self::Error> {
+        tracing::debug!("get_ironwood_nullifiers");
+        // The in-memory backend does not currently scan or store Ironwood (NU6.3) notes, so it
+        // tracks no Ironwood nullifiers. Returning an empty set is the correct answer for a wallet
+        // that holds no Ironwood notes; it is called on the scan path, so it must not panic.
+        Ok(Vec::new())
     }
 
     #[cfg(feature = "transparent-inputs")]

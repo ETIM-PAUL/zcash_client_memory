@@ -150,7 +150,7 @@ where
                             )),
                         )
                     }
-                    Recipient::InternalAccount { .. } => OutputOfSentTx::from_parts(
+                    Recipient::InternalShielded { .. } => OutputOfSentTx::from_parts(
                         note.value,
                         None,
                         #[cfg(feature = "transparent-inputs")]
@@ -201,7 +201,7 @@ where
         Ok(self
             .received_notes
             .iter()
-            .filter(|rn| rn.note.protocol() == protocol)
+            .filter(|rn| rn.note.pool() == protocol)
             .cloned()
             .map(Into::into)
             .collect())
@@ -399,6 +399,10 @@ where
                         Ok(())
                     })?;
             }
+            // The in-memory backend maintains no Ironwood (NU6.3) note commitment tree, so it has
+            // no Ironwood checkpoint history to report.
+            #[cfg(feature = "orchard")]
+            ShieldedProtocol::Ironwood => {}
             #[cfg(not(feature = "orchard"))]
             _ => {}
         }
