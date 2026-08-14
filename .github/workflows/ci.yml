@@ -33,7 +33,7 @@ jobs:
       # build.rs compiles the bundled `.proto` files with prost-build.
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # --locked verifies the committed Cargo.lock resolves and builds.
       - name: Build and test
         run: cargo test --locked ${{ matrix.flags }}
@@ -59,7 +59,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Add target
         run: rustup target add ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.target }}
       - name: Build for target
@@ -76,7 +76,7 @@ jobs:
           persist-credentials: false
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Run Clippy
         run: cargo clippy --locked --all-features --all-targets -- -D warnings
 
@@ -103,7 +103,7 @@ jobs:
           persist-credentials: false
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Check intra-doc links
         run: cargo doc --locked --no-deps --all-features
         env:
