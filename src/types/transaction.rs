@@ -177,7 +177,11 @@ impl TransactionTable {
     ) {
         match self.0.entry(tx.txid()) {
             Entry::Occupied(mut entry) => {
-                entry.get_mut().fee = fee;
+                // Re-storing a transaction (for example during enhancement, which supplies no
+                // fee) must not discard a fee that is already known.
+                if fee.is_some() {
+                    entry.get_mut().fee = fee;
+                }
                 entry.get_mut().expiry_height = Some(tx.expiry_height());
 
                 let mut raw = Vec::new();

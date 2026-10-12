@@ -1,9 +1,7 @@
 pub mod received;
 pub mod sent;
 
-pub(crate) use received::{
-    ReceievedNoteSpends, to_spendable_notes,
-};
+pub(crate) use received::{ReceievedNoteSpends, to_spendable_notes};
 pub use received::{ReceivedNote, ReceivedNoteTable};
 #[cfg(test)]
 pub(crate) use sent::SentNoteId;
@@ -21,21 +19,24 @@ mod serialization {
             Self {
                 tx_id: Some(note_id.txid().into()),
                 pool: match note_id.protocol() {
-                    zcash_protocol::ShieldedProtocol::Sapling => {
+                    zcash_protocol::ShieldedPool::Sapling => {
                         proto::PoolType::ShieldedSapling.into()
                     }
                     #[cfg(feature = "orchard")]
-                    zcash_protocol::ShieldedProtocol::Orchard => {
+                    zcash_protocol::ShieldedPool::Orchard => {
                         proto::PoolType::ShieldedOrchard.into()
                     }
                     #[cfg(not(feature = "orchard"))]
-                    zcash_protocol::ShieldedProtocol::Orchard => panic!(
+                    zcash_protocol::ShieldedPool::Orchard => panic!(
                         "Attempting to deserialize orchard supporting wallet using library built without orchard feature"
                     ),
-                    // The in-memory backend does not scan or store Ironwood (NU6.3) notes, so no
-                    // Ironwood NoteId is ever produced to be serialized here.
-                    zcash_protocol::ShieldedProtocol::Ironwood => unreachable!(
-                        "the in-memory backend does not track Ironwood notes"
+                    #[cfg(feature = "orchard")]
+                    zcash_protocol::ShieldedPool::Ironwood => {
+                        proto::PoolType::ShieldedIronwood.into()
+                    }
+                    #[cfg(not(feature = "orchard"))]
+                    zcash_protocol::ShieldedPool::Ironwood => panic!(
+                        "Attempting to deserialize orchard supporting wallet using library built without orchard feature"
                     ),
                 },
                 output_index: u32::from(note_id.output_index()),
@@ -49,9 +50,11 @@ mod serialization {
             Ok(Self::new(
                 read_optional!(note_id.clone(), tx_id)?.try_into()?,
                 match note_id.pool() {
-                    proto::PoolType::ShieldedSapling => zcash_protocol::ShieldedProtocol::Sapling,
+                    proto::PoolType::ShieldedSapling => zcash_protocol::ShieldedPool::Sapling,
                     #[cfg(feature = "orchard")]
-                    proto::PoolType::ShieldedOrchard => zcash_protocol::ShieldedProtocol::Orchard,
+                    proto::PoolType::ShieldedOrchard => zcash_protocol::ShieldedPool::Orchard,
+                    #[cfg(feature = "orchard")]
+                    proto::PoolType::ShieldedIronwood => zcash_protocol::ShieldedPool::Ironwood,
                     _ => panic!("invalid pool"),
                 },
                 note_id.output_index.try_into()?,
@@ -77,10 +80,18 @@ mod serialization {
                         }),
                     },
                     rho: None,
+                    note_version: None,
                 },
                 #[cfg(feature = "orchard")]
-                Note::Orchard { note, .. } => Self {
-                    protocol: proto::ShieldedProtocol::Orchard.into(),
+                Note::Orchard { note, pool } => Self {
+                    protocol: match pool {
+                        orchard::ValuePool::Ironwood => proto::ShieldedProtocol::Ironwood.into(),
+                        _ => proto::ShieldedProtocol::Orchard.into(),
+                    },
+                    note_version: Some(match note.version() {
+                        orchard::note::NoteVersion::V2 => 2,
+                        orchard::note::NoteVersion::V3 => 3,
+                    }),
                     recipient: note.recipient().to_raw_address_bytes().to_vec(),
                     value: note.value().inner(),
                     rseed: Some(proto::RSeed {
@@ -117,7 +128,8 @@ mod serialization {
                     Self::Sapling(sapling::Note::from_parts(recipient, value, rseed))
                 }
                 #[cfg(feature = "orchard")]
-                proto::ShieldedProtocol::Orchard => {
+                proto::ShieldedProtocol::Orchard | proto::ShieldedProtocol::Ironwood => {
+                    let protocol = note.protocol();
                     let recipient = orchard::Address::from_raw_address_bytes(
                         &note.recipient.try_into().unwrap(),
                     )
@@ -131,19 +143,20 @@ mod serialization {
                         &rho,
                     )
                     .unwrap();
-                    // orchard 0.15 (NU6.3) adds a note-plaintext version: V2 = Orchard,
-                    // V3 = Ironwood. Notes persisted under the old proto (no version field)
-                    // are Orchard-pool notes, so reconstruct them as V2.
+                    // The note plaintext version and the value pool are persisted separately.
+                    // Notes from version 1 wallets carry neither: they are V2 Orchard notes.
+                    let version = match note.note_version {
+                        Some(3) => orchard::note::NoteVersion::V3,
+                        _ => orchard::note::NoteVersion::V2,
+                    };
+                    let pool = match protocol {
+                        proto::ShieldedProtocol::Ironwood => orchard::ValuePool::Ironwood,
+                        _ => orchard::ValuePool::Orchard,
+                    };
                     Self::Orchard {
-                        note: orchard::Note::from_parts(
-                            recipient,
-                            value,
-                            rho,
-                            rseed,
-                            orchard::note::NoteVersion::V2,
-                        )
-                        .unwrap(),
-                        pool: orchard::ValuePool::Orchard,
+                        note: orchard::Note::from_parts(recipient, value, rho, rseed, version)
+                            .unwrap(),
+                        pool,
                     }
                 }
                 #[cfg(not(feature = "orchard"))]

@@ -9,6 +9,10 @@ mod sapling;
 #[cfg(feature = "orchard")]
 mod orchard;
 
+#[cfg(test)]
+#[cfg(feature = "orchard")]
+mod ironwood;
+
 pub(crate) fn send_single_step_proposed_transfer<T: ShieldedPoolTester>() {
     zcash_client_backend::data_api::testing::pool::send_single_step_proposed_transfer::<T>(
         TestMemDbFactory::new(),
@@ -228,4 +232,78 @@ pub(crate) fn receive_two_notes_with_same_value<T: ShieldedPoolTester>() {
         TestMemDbFactory::new(),
         MemBlockCache::new(),
     )
+}
+
+pub(crate) fn explicit_note_locking<T: ShieldedPoolTester>() {
+    zcash_client_backend::data_api::testing::pool::explicit_note_locking::<T>(
+        TestMemDbFactory::new(),
+        MemBlockCache::new(),
+    )
+}
+
+pub(crate) fn note_locking_height_boundary<T: ShieldedPoolTester>() {
+    zcash_client_backend::data_api::testing::pool::note_locking_height_boundary::<T>(
+        TestMemDbFactory::new(),
+        MemBlockCache::new(),
+    )
+}
+
+pub(crate) fn clear_locked_outputs<T: ShieldedPoolTester>() {
+    zcash_client_backend::data_api::testing::pool::clear_locked_outputs::<T>(
+        TestMemDbFactory::new(),
+        MemBlockCache::new(),
+    )
+}
+
+pub(crate) fn proposal_level_note_locking<T: ShieldedPoolTester>() {
+    zcash_client_backend::data_api::testing::pool::proposal_level_note_locking::<T>(
+        TestMemDbFactory::new(),
+        MemBlockCache::new(),
+    )
+}
+
+pub(crate) fn locked_proposal_proto_roundtrip<T: ShieldedPoolTester>() {
+    zcash_client_backend::data_api::testing::pool::locked_proposal_proto_roundtrip::<T>(
+        TestMemDbFactory::new(),
+        MemBlockCache::new(),
+    )
+}
+
+pub(crate) fn lock_expiry_restores_spendability<T: ShieldedPoolTester>() {
+    zcash_client_backend::data_api::testing::pool::lock_expiry_restores_spendability::<T>(
+        TestMemDbFactory::new(),
+        MemBlockCache::new(),
+    )
+}
+
+pub(crate) fn lock_conflict_and_batch_atomicity<T: ShieldedPoolTester>() {
+    zcash_client_backend::data_api::testing::pool::lock_conflict_and_batch_atomicity::<T>(
+        TestMemDbFactory::new(),
+        MemBlockCache::new(),
+    )
+}
+
+pub(crate) fn unlock_proposal_inputs_releases_locks<T: ShieldedPoolTester>() {
+    zcash_client_backend::data_api::testing::pool::unlock_proposal_inputs_releases_locks::<T>(
+        TestMemDbFactory::new(),
+        MemBlockCache::new(),
+    )
+}
+
+pub(crate) fn spend_policy_locked_input_policy_reaches_selection<T: ShieldedPoolTester>() {
+    zcash_client_backend::data_api::testing::pool::spend_policy_locked_input_policy_reaches_selection::<T>(
+        TestMemDbFactory::new(),
+        MemBlockCache::new(),
+    )
+}
+
+pub(crate) fn single_note_selection_honors_lock_tier_preference<T: ShieldedPoolTester>() {
+    zcash_client_backend::data_api::testing::pool::single_note_selection_honors_lock_tier_preference::<
+        T,
+    >(TestMemDbFactory::new(), MemBlockCache::new())
+}
+
+#[cfg(feature = "transparent-inputs")]
+pub(crate) fn transparent_note_locking() {
+    zcash_client_backend::data_api::testing::pool::transparent_note_locking(TestMemDbFactory::new())
 }

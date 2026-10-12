@@ -10,6 +10,8 @@ message Note {
   uint64 value = 3;
   optional bytes rho = 4;
   RSeed rseed = 5;
+  // Orchard-family note plaintext version (2 or 3). Absent in version 1 wallets, meaning 2.
+  optional uint32 note_version = 6;
 }
 
 message RSeed {

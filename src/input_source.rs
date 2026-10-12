@@ -1,16 +1,19 @@
 use std::num::NonZeroU32;
 
+use shardtree::store::ShardStore;
 use zcash_client_backend::{
     data_api::{
         AccountMeta, InputSource, NoteFilter, PoolMeta, ReceivedNotes, TargetValue, WalletRead,
+        locking::LockFilter,
         wallet::{ConfirmationsPolicy, TargetHeight},
     },
-    wallet::NoteId,
+    wallet::{NoteId, OutputRef},
 };
 use zcash_primitives::transaction::Transaction;
 use zcash_protocol::{
+    PoolType,
     ShieldedPool::{self as ShieldedProtocol, Sapling},
-    consensus::{self, BranchId},
+    consensus::{self, BlockHeight, BranchId},
     value::Zatoshis,
 };
 
@@ -24,10 +27,28 @@ use {
         data_api::{CoinbaseFilter, TransactionStatus},
         wallet::WalletTransparentOutput,
     },
-    zcash_protocol::consensus::BlockHeight,
 };
 
 use crate::{AccountId, MemoryWalletDb, error::Error, to_spendable_notes};
+
+/// Returns the [`OutputRef`] under which lock state is tracked for a received shielded note.
+pub(crate) fn note_output_ref(note: &crate::ReceivedNote) -> OutputRef {
+    OutputRef::new(
+        note.txid,
+        PoolType::Shielded(note.note.pool()),
+        note.output_index,
+    )
+}
+
+/// Returns the [`OutputRef`] under which lock state is tracked for a transparent output.
+#[cfg(feature = "transparent-inputs")]
+pub(crate) fn utxo_output_ref(outpoint: &OutPoint) -> OutputRef {
+    OutputRef::new(
+        zcash_primitives::transaction::TxId::from_bytes(*outpoint.hash()),
+        PoolType::TRANSPARENT,
+        outpoint.n(),
+    )
+}
 
 impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
     type Error = crate::error::Error;
@@ -37,9 +58,10 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
     fn get_spendable_note(
         &self,
         txid: &zcash_primitives::transaction::TxId,
-        protocol: zcash_protocol::ShieldedProtocol,
+        protocol: ShieldedProtocol,
         index: u32,
         target_height: TargetHeight,
+        lock_filter: LockFilter<'_>,
     ) -> Result<
         Option<
             zcash_client_backend::wallet::ReceivedNote<
@@ -49,15 +71,18 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
         >,
         Self::Error,
     > {
-        let note = self.received_notes.iter().find(|rn| {
-            &rn.txid == txid && rn.note.pool() == protocol && rn.output_index == index
-        });
+        let note = self
+            .received_notes
+            .iter()
+            .find(|rn| &rn.txid == txid && rn.note.pool() == protocol && rn.output_index == index);
 
         Ok(if let Some(note) = note {
-            if self.note_is_spent(note, target_height)? {
+            if self.note_is_spent(note, target_height)?
+                || !self.output_lock_admits(&note_output_ref(note), target_height, lock_filter)
+            {
                 None
             } else {
-                let tx = self.tx_table.get_transaction(&note.txid);
+                let (mined_height, max_shielding_input_height) = self.note_heights(note);
                 Some(zcash_client_backend::wallet::ReceivedNote::from_parts(
                     note.note_id,
                     *txid,
@@ -67,28 +92,8 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
                         .ok_or(Error::Missing("recipient key scope".into()))?,
                     note.commitment_tree_position
                         .ok_or(Error::Missing("commitment tree position".into()))?,
-                    tx.and_then(|tx| tx.mined_height()),
-                    // Find the maximum height among transparent inputs to the transaction that
-                    // produced this note.
-                    tx.and_then(|tx| {
-                        tx.raw()
-                            .and_then(|raw| {
-                                // The branch id here is irrelevant; it does not affect any APIs that we
-                                // end up using here.
-                                Transaction::read(raw, BranchId::Sapling).ok()
-                            })
-                            .and_then(|tx| {
-                                tx.transparent_bundle()
-                                    .iter()
-                                    .flat_map(|b| b.vin.iter())
-                                    .filter_map(|txin| {
-                                        self.tx_table
-                                            .get_transaction(txin.prevout().txid())
-                                            .and_then(|input_tx| input_tx.mined_height())
-                                    })
-                                    .max()
-                            })
-                    }),
+                    mined_height,
+                    max_shielding_input_height,
                 ))
             }
         } else {
@@ -100,10 +105,11 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
         &self,
         account: Self::AccountId,
         target_value: TargetValue,
-        sources: &[zcash_protocol::ShieldedProtocol],
+        sources: &[ShieldedProtocol],
         target_height: TargetHeight,
         confirmations_policy: ConfirmationsPolicy,
         exclude: &[Self::NoteRef],
+        lock_filter: LockFilter<'_>,
     ) -> Result<zcash_client_backend::data_api::ReceivedNotes<Self::NoteRef>, Self::Error> {
         let sapling_eligible_notes = if sources.contains(&Sapling) {
             self.select_spendable_notes_from_pool(
@@ -113,6 +119,7 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
                 target_height,
                 confirmations_policy,
                 exclude,
+                lock_filter,
             )?
         } else {
             Vec::new()
@@ -127,6 +134,22 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
                 target_height,
                 confirmations_policy,
                 exclude,
+                lock_filter,
+            )?
+        } else {
+            Vec::new()
+        };
+
+        #[cfg(feature = "orchard")]
+        let ironwood_eligible_notes = if sources.contains(&ShieldedProtocol::Ironwood) {
+            self.select_spendable_notes_from_pool(
+                account,
+                target_value,
+                &ShieldedProtocol::Ironwood,
+                target_height,
+                confirmations_policy,
+                exclude,
+                lock_filter,
             )?
         } else {
             Vec::new()
@@ -136,17 +159,136 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
             &sapling_eligible_notes,
             #[cfg(feature = "orchard")]
             &orchard_eligible_notes,
+            #[cfg(feature = "orchard")]
+            &ironwood_eligible_notes,
+            &|note| self.note_heights(note),
         )
     }
 
     fn select_unspent_notes(
         &self,
-        _account: Self::AccountId,
-        _sources: &[ShieldedProtocol],
-        _target_height: TargetHeight,
-        _exclude: &[Self::NoteRef],
+        account: Self::AccountId,
+        sources: &[ShieldedProtocol],
+        target_height: TargetHeight,
+        exclude: &[Self::NoteRef],
+        lock_filter: LockFilter<'_>,
     ) -> Result<ReceivedNotes<Self::NoteRef>, Self::Error> {
-        unimplemented!()
+        // Unlike `select_spendable_notes`, this does not apply confirmation, dust, or anchor
+        // constraints: it returns every note the wallet knows to be unspent.
+        let unspent = |pool: ShieldedProtocol| -> Result<Vec<&crate::ReceivedNote>, Error> {
+            let mut notes = Vec::new();
+            if !sources.contains(&pool) {
+                return Ok(notes);
+            }
+            for note in self.received_notes.iter() {
+                if note.account_id == account
+                    && note.note.pool() == pool
+                    && !exclude.contains(&note.note_id)
+                    && !self.note_is_spent(note, target_height)?
+                    && self.output_lock_admits(&note_output_ref(note), target_height, lock_filter)
+                {
+                    notes.push(note);
+                }
+            }
+            notes.sort_by_key(|n| n.commitment_tree_position);
+            Ok(notes)
+        };
+
+        let sapling_notes = unspent(Sapling)?;
+        #[cfg(feature = "orchard")]
+        let orchard_notes = unspent(Orchard)?;
+        #[cfg(feature = "orchard")]
+        let ironwood_notes = unspent(ShieldedProtocol::Ironwood)?;
+
+        to_spendable_notes(
+            &sapling_notes,
+            #[cfg(feature = "orchard")]
+            &orchard_notes,
+            #[cfg(feature = "orchard")]
+            &ironwood_notes,
+            &|note| self.note_heights(note),
+        )
+    }
+
+    fn select_single_spendable_note(
+        &self,
+        account: Self::AccountId,
+        value: Zatoshis,
+        sources: &[ShieldedProtocol],
+        target_height: TargetHeight,
+        confirmations_policy: ConfirmationsPolicy,
+        exclude: &[Self::NoteRef],
+        lock_filter: LockFilter<'_>,
+    ) -> Result<ReceivedNotes<Self::NoteRef>, Self::Error> {
+        // Returns the oldest eligible note, within the best lock tier, whose value alone covers
+        // `value`, drawn from the first pool in `sources` (in the given preference order) that
+        // holds one.
+        for pool in sources {
+            // Selecting with `AllFunds` yields every eligible note in the pool, in selection order.
+            let candidates = self.select_spendable_notes_from_pool(
+                account,
+                TargetValue::AllFunds(zcash_client_backend::data_api::MaxSpendMode::MaxSpendable),
+                pool,
+                target_height,
+                confirmations_policy,
+                exclude,
+                lock_filter,
+            )?;
+            if let Some(note) = candidates.into_iter().find(|n| n.note.value() >= value) {
+                let single = [note];
+                let heights = |note: &crate::ReceivedNote| self.note_heights(note);
+                return match *pool {
+                    Sapling => to_spendable_notes(
+                        &single,
+                        #[cfg(feature = "orchard")]
+                        &[],
+                        #[cfg(feature = "orchard")]
+                        &[],
+                        &heights,
+                    ),
+                    #[cfg(feature = "orchard")]
+                    Orchard => to_spendable_notes(&[], &single, &[], &heights),
+                    #[cfg(feature = "orchard")]
+                    ShieldedProtocol::Ironwood => to_spendable_notes(&[], &[], &single, &heights),
+                    #[cfg(not(feature = "orchard"))]
+                    _ => Ok(ReceivedNotes::empty()),
+                };
+            }
+        }
+        Ok(ReceivedNotes::empty())
+    }
+
+    fn anchor_computable(
+        &self,
+        protocol: ShieldedProtocol,
+        height: BlockHeight,
+    ) -> Result<bool, Self::Error> {
+        // An anchor is computable exactly at the heights whose note commitment tree checkpoints
+        // the wallet retains.
+        match protocol {
+            Sapling => Ok(self
+                .sapling_tree
+                .store()
+                .get_checkpoint(&height)
+                .map_err(|e: std::convert::Infallible| -> Error { match e {} })?
+                .is_some()),
+            #[cfg(feature = "orchard")]
+            Orchard => Ok(self
+                .orchard_tree
+                .store()
+                .get_checkpoint(&height)
+                .map_err(|e: std::convert::Infallible| -> Error { match e {} })?
+                .is_some()),
+            #[cfg(feature = "orchard")]
+            ShieldedProtocol::Ironwood => Ok(self
+                .ironwood_tree
+                .store()
+                .get_checkpoint(&height)
+                .map_err(|e: std::convert::Infallible| -> Error { match e {} })?
+                .is_some()),
+            #[cfg(not(feature = "orchard"))]
+            _ => Ok(false),
+        }
     }
 
     #[cfg(feature = "transparent-inputs")]
@@ -156,6 +298,7 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
         target_height: TargetHeight,
         confirmations_policy: ConfirmationsPolicy,
         output_filter: CoinbaseFilter,
+        lock_filter: LockFilter<'_>,
     ) -> Result<Vec<WalletTransparentOutput<AccountId>>, Self::Error> {
         // TODO: take into consideration coinbase maturity
         // See <https://github.com/zcash/librustzcash/issues/821>
@@ -167,6 +310,11 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
             .filter(|(outpoint, _, _)| {
                 self.utxo_is_spendable(outpoint, target_height, confirmations_policy)
                     .unwrap_or(false)
+                    && self.output_lock_admits(
+                        &utxo_output_ref(outpoint),
+                        target_height,
+                        lock_filter,
+                    )
             })
             .filter(|(_, _, tx)| match output_filter {
                 CoinbaseFilter::AllTransparentOutputs => true,
@@ -220,6 +368,7 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
         selector: &NoteFilter,
         target_height: TargetHeight,
         exclude: &[Self::NoteRef],
+        lock_filter: LockFilter<'_>,
     ) -> Result<AccountMeta, Self::Error> {
         let confirmations_policy = ConfirmationsPolicy::new_symmetrical(
             NonZeroU32::MIN,
@@ -234,6 +383,7 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
             target_height,
             confirmations_policy,
             exclude,
+            lock_filter,
         )?;
 
         #[cfg(feature = "orchard")]
@@ -244,6 +394,7 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
             target_height,
             confirmations_policy,
             exclude,
+            lock_filter,
         )?;
         #[cfg(not(feature = "orchard"))]
         let orchard_pool_meta = None;
@@ -258,6 +409,7 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
             target_height,
             confirmations_policy,
             exclude,
+            lock_filter,
         )?;
         #[cfg(not(feature = "orchard"))]
         let ironwood_pool_meta = None;
@@ -271,16 +423,69 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
 }
 
 impl<P: consensus::Parameters> MemoryWalletDb<P> {
+    /// Returns the height at which the transaction that produced `note` was mined, and the
+    /// maximum height among the transparent inputs to that transaction. These feed the effective
+    /// confirmations computation for externally-received value (see ZIP 315).
+    pub(crate) fn note_heights(
+        &self,
+        note: &crate::ReceivedNote,
+    ) -> crate::types::notes::received::NoteHeights {
+        let tx = self.tx_table.get_transaction(&note.txid);
+        let mined_height = tx.and_then(|tx| tx.mined_height());
+        // Find the maximum height among transparent inputs to the transaction that produced this
+        // note.
+        let max_shielding_input_height = tx.and_then(|tx| {
+            tx.raw()
+                .and_then(|raw| {
+                    // The branch id here is irrelevant; it does not affect any APIs that we end up
+                    // using here.
+                    Transaction::read(raw, BranchId::Sapling).ok()
+                })
+                .and_then(|tx| {
+                    tx.transparent_bundle()
+                        .iter()
+                        .flat_map(|b| b.vin.iter())
+                        .filter_map(|txin| {
+                            self.tx_table
+                                .get_transaction(txin.prevout().txid())
+                                .and_then(|input_tx| input_tx.mined_height())
+                        })
+                        .max()
+                })
+        });
+        (mined_height, max_shielding_input_height)
+    }
+
+    /// The selection tier of an output under `lock_filter`; outputs in lower tiers are selected
+    /// first. Only outputs that `output_lock_admits` are ever tiered.
+    ///
+    /// Under `LockedInputPolicy::PreferUnlocked`, and by default, currently-unlocked outputs come
+    /// first; under `PreferLocked`, outputs held by an admitted lock owner come first.
+    fn lock_tier(
+        &self,
+        output: &OutputRef,
+        target_height: TargetHeight,
+        lock_filter: LockFilter<'_>,
+    ) -> u8 {
+        let locked = self.output_is_locked(output, target_height);
+        match lock_filter {
+            LockFilter::Policy(policy) if policy.prefers_locked() => u8::from(!locked),
+            _ => u8::from(locked),
+        }
+    }
+
     // Select the spendable notes to cover the given target value considering only a single pool
-    // Returns the notes sorted oldest to newest
+    // Returns the notes sorted by lock tier, then oldest to newest
+    #[allow(clippy::too_many_arguments)]
     fn select_spendable_notes_from_pool(
         &self,
         account: AccountId,
         target_value: TargetValue,
-        pool: &zcash_protocol::ShieldedProtocol,
+        pool: &ShieldedProtocol,
         target_height: TargetHeight,
         confirmations_policy: ConfirmationsPolicy,
         exclude: &[NoteId],
+        lock_filter: LockFilter<'_>,
     ) -> Result<Vec<&crate::ReceivedNote>, Error> {
         let birthday_height = match self.get_wallet_birthday()? {
             Some(birthday) => birthday,
@@ -297,6 +502,9 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             .filter(|note| note.account_id == account)
             .filter(|note| note.note.pool() == *pool)
             .filter(|note| {
+                self.output_lock_admits(&note_output_ref(note), target_height, lock_filter)
+            })
+            .filter(|note| {
                 self.note_is_spendable(
                     note,
                     birthday_height,
@@ -308,8 +516,14 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             })
             .collect::<Vec<_>>();
 
-        // sort by oldest first (use location in commitment tree since this gives a total order)
-        eligible_notes.sort_by_key(|a| a.commitment_tree_position);
+        // sort by lock tier (see `lock_tier`), then oldest first (use location in commitment tree
+        // since this gives a total order)
+        eligible_notes.sort_by_key(|note| {
+            (
+                self.lock_tier(&note_output_ref(note), target_height, lock_filter),
+                note.commitment_tree_position,
+            )
+        });
 
         // now take notes until we have enough to cover the target value
         let mut value_acc = Zatoshis::ZERO;
@@ -318,7 +532,8 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             .take_while(|note| {
                 let take = match target_value {
                     TargetValue::AtLeast(target) => value_acc <= target,
-                    TargetValue::AllFunds(_) => unimplemented!(),
+                    // Spending all funds selects every eligible note.
+                    TargetValue::AllFunds(_) => true,
                 };
                 value_acc = (value_acc + note.note.value()).expect("value overflow");
                 take
@@ -382,6 +597,7 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
         Ok(spent)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spendable_notes_meta(
         &self,
         protocol: ShieldedProtocol,
@@ -390,6 +606,7 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
         target_height: TargetHeight,
         confirmations_policy: ConfirmationsPolicy,
         exclude: &[NoteId],
+        lock_filter: LockFilter<'_>,
     ) -> Result<Option<PoolMeta>, Error> {
         let birthday_height = match self.get_wallet_birthday()? {
             Some(birthday) => birthday,
@@ -402,6 +619,9 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             .iter()
             .filter(|note| note.account_id == account)
             .filter(|note| note.note.pool() == protocol)
+            .filter(|note| {
+                self.output_lock_admits(&note_output_ref(note), target_height, lock_filter)
+            })
             .filter(|note| {
                 self.note_is_spendable(
                     note,

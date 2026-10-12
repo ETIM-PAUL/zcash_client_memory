@@ -1,7 +1,9 @@
 use std::convert::{Infallible, identity};
 use std::fmt::Debug;
 
-use zcash_client_backend::data_api::testing::CacheInsertionResult;
+use zcash_client_backend::data_api::{
+    anchor_retention::AnchorRetentionInterval, testing::CacheInsertionResult,
+};
 use zcash_client_backend::{
     data_api::{
         OutputOfSentTx, SAPLING_SHARD_HEIGHT, WalletTest,
@@ -12,7 +14,7 @@ use zcash_client_backend::{
 };
 use zcash_keys::address::Address;
 use zcash_protocol::{
-    ShieldedProtocol, TxId,
+    ShieldedPool as ShieldedProtocol, TxId,
     consensus::BlockHeight,
     local_consensus::LocalNetwork,
     value::{ZatBalance, Zatoshis},
@@ -57,8 +59,14 @@ impl DataStoreFactory for TestMemDbFactory {
     fn new_data_store(
         &self,
         network: LocalNetwork,
+        anchor_retention_interval: Option<AnchorRetentionInterval>,
         #[cfg(feature = "transparent-inputs")] _gap_limits: Option<GapLimits>,
     ) -> Result<Self::DataStore, Self::Error> {
+        // This backend does not make checkpoint retention configurable, so a test that asks for a
+        // specific interval cannot be run against it.
+        if anchor_retention_interval.is_some() {
+            return Err(());
+        }
         Ok(MemoryWalletDb::new(network, 100))
     }
 }
@@ -196,7 +204,7 @@ where
 
     fn get_notes(
         &self,
-        protocol: zcash_protocol::ShieldedProtocol,
+        protocol: zcash_protocol::ShieldedPool,
     ) -> Result<Vec<ReceivedNote<NoteId, Note>>, Error> {
         Ok(self
             .received_notes
@@ -363,6 +371,7 @@ where
                         0,            // Unimplemented: memo_count
                         false,        // Unimplemented: expired_unmined
                         is_shielding, // is_shielding
+                        None,         // pool_crossing_value: ZIP 318 pool migration is not tracked
                     ),
                 )
             })
@@ -414,7 +423,7 @@ where
 
     fn finally(&self) {
         // ensure the wallet state at the conclusion of each test can be round-tripped through serialization
-        let proto = crate::proto::memwallet::MemoryWallet::from(self);
+        let proto = crate::proto::memwallet::MemoryWallet::try_from(self).unwrap();
         let recovered_wallet =
             MemoryWalletDb::new_from_proto(proto.clone(), self.params.clone(), 100).unwrap();
 
@@ -433,6 +442,30 @@ where
         assert_eq!(
             self.sapling_tree.store().get_shard_roots(),
             recovered_tree.store().get_shard_roots()
+        );
+
+        // The Orchard-shaped trees (Orchard and Ironwood) round-trip too.
+        #[cfg(feature = "orchard")]
+        for tree in [&self.orchard_tree, &recovered_wallet.ironwood_tree] {
+            let tree_proto = tree_to_protobuf(tree).unwrap().unwrap();
+            let recovered_tree: shardtree::ShardTree<
+                shardtree::store::memory::MemoryShardStore<
+                    orchard::tree::MerkleHashOrchard,
+                    BlockHeight,
+                >,
+                { zcash_client_backend::data_api::ORCHARD_SHARD_HEIGHT * 2 },
+                { zcash_client_backend::data_api::ORCHARD_SHARD_HEIGHT },
+            > = tree_from_protobuf(tree_proto, 100, 16.into()).unwrap();
+            assert_eq!(
+                tree.store().get_shard_roots(),
+                recovered_tree.store().get_shard_roots()
+            );
+        }
+        #[cfg(feature = "orchard")]
+        assert_eq!(
+            self.ironwood_tree.store().get_shard_roots(),
+            recovered_wallet.ironwood_tree.store().get_shard_roots(),
+            "the Ironwood tree survives the wallet round trip"
         );
     }
 }

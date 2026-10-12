@@ -46,7 +46,6 @@ fn spend_fails_on_unverified_notes() {
 }
 
 #[test]
-#[ignore] //FIXME
 fn spend_fails_on_locked_notes() {
     testing::pool::spend_fails_on_locked_notes::<OrchardPoolTester>()
 }
@@ -168,4 +167,54 @@ fn scan_cached_blocks_detects_spends_out_of_order() {
 #[ignore] //FIXME
 fn receive_two_notes_with_same_value() {
     testing::pool::receive_two_notes_with_same_value::<OrchardPoolTester>()
+}
+
+#[test]
+fn explicit_note_locking() {
+    testing::pool::explicit_note_locking::<OrchardPoolTester>()
+}
+
+#[test]
+fn note_locking_height_boundary() {
+    testing::pool::note_locking_height_boundary::<OrchardPoolTester>()
+}
+
+#[test]
+fn clear_locked_outputs() {
+    testing::pool::clear_locked_outputs::<OrchardPoolTester>()
+}
+
+#[test]
+fn proposal_level_note_locking() {
+    testing::pool::proposal_level_note_locking::<OrchardPoolTester>()
+}
+
+#[test]
+fn locked_proposal_proto_roundtrip() {
+    testing::pool::locked_proposal_proto_roundtrip::<OrchardPoolTester>()
+}
+
+#[test]
+fn lock_expiry_restores_spendability() {
+    testing::pool::lock_expiry_restores_spendability::<OrchardPoolTester>()
+}
+
+#[test]
+fn lock_conflict_and_batch_atomicity() {
+    testing::pool::lock_conflict_and_batch_atomicity::<OrchardPoolTester>()
+}
+
+#[test]
+fn unlock_proposal_inputs_releases_locks() {
+    testing::pool::unlock_proposal_inputs_releases_locks::<OrchardPoolTester>()
+}
+
+#[test]
+fn spend_policy_locked_input_policy_reaches_selection() {
+    testing::pool::spend_policy_locked_input_policy_reaches_selection::<OrchardPoolTester>()
+}
+
+#[test]
+fn single_note_selection_honors_lock_tier_preference() {
+    testing::pool::single_note_selection_honors_lock_tier_preference::<OrchardPoolTester>()
 }

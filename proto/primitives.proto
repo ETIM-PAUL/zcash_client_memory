@@ -22,11 +22,13 @@ enum PoolType {
   Transparent = 0;
   ShieldedSapling = 1;
   ShieldedOrchard = 2;
+  ShieldedIronwood = 3;
 }
 
 enum ShieldedProtocol {
   sapling = 0;
   orchard = 1;
+  ironwood = 2;
 }
 
 message Memo {

@@ -4,6 +4,7 @@ mod input_source;
 pub mod proto;
 mod types;
 mod wallet_commitment_trees;
+mod wallet_locking;
 mod wallet_read;
 mod wallet_write;
 
@@ -13,8 +14,10 @@ pub use block_source::*;
 pub use error::Error;
 pub use types::MemoryWalletDb;
 // Re-export types needed for transaction history feature
-pub use types::{ReceivedNote, ReceivedNoteTable, SentNote, SentNoteTable, TransactionEntry, TransactionTable};
 pub(crate) use types::*;
+pub use types::{
+    ReceivedNote, ReceivedNoteTable, SentNote, SentNoteTable, TransactionEntry, TransactionTable,
+};
 
 /// The maximum number of blocks the wallet is allowed to rewind. This is
 /// consistent with the bound in zcashd, and allows block data deeper than

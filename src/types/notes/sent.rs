@@ -189,7 +189,7 @@ mod serialization {
     use super::*;
     use crate::{error::Error, proto::memwallet as proto, read_optional};
     use zcash_address::ZcashAddress;
-    use zcash_protocol::ShieldedProtocol;
+    use zcash_protocol::ShieldedPool as ShieldedProtocol;
 
     #[cfg(feature = "transparent-inputs")]
     use {
@@ -230,11 +230,7 @@ mod serialization {
                     pool: match note_id.protocol() {
                         ShieldedProtocol::Sapling => proto::PoolType::ShieldedSapling as i32,
                         ShieldedProtocol::Orchard => proto::PoolType::ShieldedOrchard as i32,
-                        // The in-memory backend does not track Ironwood (NU6.3) notes, so no
-                        // Ironwood sent-note id is ever produced.
-                        ShieldedProtocol::Ironwood => unreachable!(
-                            "the in-memory backend does not track Ironwood notes"
-                        ),
+                        ShieldedProtocol::Ironwood => proto::PoolType::ShieldedIronwood as i32,
                     },
                 },
                 SentNoteId::Transparent { txid, output_index } => proto::NoteId {
@@ -262,8 +258,16 @@ mod serialization {
                     Orchard,
                     note_id.output_index.try_into()?,
                 )),
+                #[cfg(feature = "orchard")]
+                proto::PoolType::ShieldedIronwood => SentNoteId::Shielded(NoteId::new(
+                    read_optional!(note_id, tx_id)?.try_into()?,
+                    zcash_protocol::ShieldedPool::Ironwood,
+                    note_id.output_index.try_into()?,
+                )),
                 #[cfg(not(feature = "orchard"))]
-                proto::PoolType::ShieldedOrchard => return Err(Error::OrchardNotEnabled),
+                proto::PoolType::ShieldedOrchard | proto::PoolType::ShieldedIronwood => {
+                    return Err(Error::OrchardNotEnabled);
+                }
                 proto::PoolType::Transparent => SentNoteId::Transparent {
                     txid: read_optional!(note_id, tx_id)?.try_into()?,
                     output_index: note_id.output_index,
@@ -304,10 +308,9 @@ mod serialization {
                         PoolType::Shielded(Sapling) => proto::PoolType::ShieldedSapling,
                         #[cfg(feature = "orchard")]
                         PoolType::Shielded(Orchard) => proto::PoolType::ShieldedOrchard,
-                        // The in-memory backend does not send to the Ironwood (NU6.3) pool, so no
-                        // external Ironwood recipient is ever serialized.
+                        #[cfg(feature = "orchard")]
                         PoolType::Shielded(zcash_protocol::ShieldedPool::Ironwood) => {
-                            unreachable!("the in-memory backend does not produce Ironwood outputs")
+                            proto::PoolType::ShieldedIronwood
                         }
                         #[cfg(not(feature = "orchard"))]
                         _ => panic!("Orchard not enabled"),
@@ -378,8 +381,13 @@ mod serialization {
                             proto::PoolType::ShieldedSapling => PoolType::Shielded(Sapling),
                             #[cfg(feature = "orchard")]
                             proto::PoolType::ShieldedOrchard => PoolType::Shielded(Orchard),
+                            #[cfg(feature = "orchard")]
+                            proto::PoolType::ShieldedIronwood => {
+                                PoolType::Shielded(zcash_protocol::ShieldedPool::Ironwood)
+                            }
                             #[cfg(not(feature = "orchard"))]
-                            proto::PoolType::ShieldedOrchard => {
+                            proto::PoolType::ShieldedOrchard
+                            | proto::PoolType::ShieldedIronwood => {
                                 return Err(Error::OrchardNotEnabled);
                             }
                         },
@@ -424,7 +432,7 @@ mod serialization {
         use super::*;
         use crate::proto::memwallet as proto;
 
-        use zcash_protocol::ShieldedProtocol;
+        use zcash_protocol::ShieldedPool as ShieldedProtocol;
 
         #[test]
         fn proto_roundtrip_recipient() {

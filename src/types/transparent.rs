@@ -167,8 +167,8 @@ impl Deref for TransparentSpendCache {
 
 mod serialization {
     use super::*;
+    use crate::{Error, proto::memwallet as proto, read_optional};
     use bip32::ChildNumber;
-    use crate::{proto::memwallet as proto, read_optional, Error};
     use transparent::address::Script;
     use zcash_keys::encoding::AddressCodec;
     use zcash_protocol::{consensus::Network::MainNetwork as EncodingParams, value::Zatoshis};
@@ -194,11 +194,12 @@ mod serialization {
         fn try_from(output: proto::ReceivedTransparentOutput) -> Result<Self, Self::Error> {
             // Handle key_scope with backwards compatibility
             let key_scope = match output.key_scope {
-                Some(scope_value) => TransparentKeyScope::custom(scope_value)
-                    .ok_or_else(|| Error::CorruptedData(
-                        format!("Invalid TransparentKeyScope value: {} (must be < 2^31)", scope_value)
-                    ))?,
-                None => TransparentKeyScope::EXTERNAL,  // Default for old data without key_scope
+                Some(scope_value) => TransparentKeyScope::custom(scope_value).ok_or_else(|| {
+                    Error::CorruptedData(format!(
+                        "Invalid TransparentKeyScope value: {scope_value} (must be < 2^31)"
+                    ))
+                })?,
+                None => TransparentKeyScope::EXTERNAL, // Default for old data without key_scope
             };
 
             Ok(Self {

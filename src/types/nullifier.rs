@@ -32,6 +32,10 @@ pub(crate) enum Nullifier {
     Sapling(sapling::Nullifier),
     #[cfg(feature = "orchard")]
     Orchard(orchard::note::Nullifier),
+    /// Ironwood nullifiers are Orchard-shaped but belong to a distinct pool, so they are kept
+    /// apart from Orchard nullifiers.
+    #[cfg(feature = "orchard")]
+    Ironwood(orchard::note::Nullifier),
 }
 
 impl Nullifier {
@@ -40,6 +44,17 @@ impl Nullifier {
             Nullifier::Sapling(_) => PoolType::SAPLING,
             #[cfg(feature = "orchard")]
             Nullifier::Orchard(_) => PoolType::ORCHARD,
+            #[cfg(feature = "orchard")]
+            Nullifier::Ironwood(_) => PoolType::IRONWOOD,
+        }
+    }
+
+    /// Returns the nullifier of an Orchard-shaped note in the given value pool.
+    #[cfg(feature = "orchard")]
+    pub(crate) fn orchard_family(pool: orchard::ValuePool, nf: orchard::note::Nullifier) -> Self {
+        match pool {
+            orchard::ValuePool::Ironwood => Nullifier::Ironwood(nf),
+            _ => Nullifier::Orchard(nf),
         }
     }
 }
@@ -73,6 +88,11 @@ mod serialization {
                     protocol: proto::ShieldedProtocol::Orchard.into(),
                     nullifier: n.to_bytes().to_vec(),
                 },
+                #[cfg(feature = "orchard")]
+                Nullifier::Ironwood(n) => Self {
+                    protocol: proto::ShieldedProtocol::Ironwood.into(),
+                    nullifier: n.to_bytes().to_vec(),
+                },
             }
         }
     }
@@ -93,6 +113,16 @@ mod serialization {
                         orchard::note::Nullifier::from_bytes(&nullifier.nullifier.try_into()?)
                             .into_option()
                             .ok_or(Error::CorruptedData("Invalid Orchard nullifier".into()))?,
+                    )
+                }
+                proto::ShieldedProtocol::Ironwood => {
+                    #[cfg(not(feature = "orchard"))]
+                    return Err(Error::Other("Orchard support is not enabled".into()));
+                    #[cfg(feature = "orchard")]
+                    Nullifier::Ironwood(
+                        orchard::note::Nullifier::from_bytes(&nullifier.nullifier.try_into()?)
+                            .into_option()
+                            .ok_or(Error::CorruptedData("Invalid Ironwood nullifier".into()))?,
                     )
                 }
             })

@@ -7,15 +7,14 @@ use nonempty::NonEmpty;
 use secrecy::{ExposeSecret, SecretVec};
 use shardtree::store::ShardStore as _;
 use zcash_client_backend::data_api::{
-    AddressInfo, AddressSource, BlockMetadata, NullifierQuery, ReceivedTransactionOutput, WalletRead,
-    WalletSummary, Zip32Derivation, defaults,
+    AddressInfo, AddressSource, BlockMetadata, NullifierQuery, ReceivedTransactionOutput,
+    WalletRead, WalletSummary, Zip32Derivation, defaults,
     error::FindAccountForAddressError,
     scanning::ScanRange,
     wallet::{ConfirmationsPolicy, TargetHeight},
 };
 #[cfg(feature = "transparent-inputs")]
 use zcash_client_backend::data_api::{TransparentBalances, TransparentKeyOrigin};
-use zcash_keys::address::Address;
 use zcash_client_backend::{
     data_api::{
         Account as _, AccountBalance, AccountSource, Balance, Progress, Ratio, SeedRelevance,
@@ -24,6 +23,7 @@ use zcash_client_backend::{
     keys::{UnifiedAddressRequest, UnifiedFullViewingKey, UnifiedSpendingKey},
     wallet::NoteId,
 };
+use zcash_keys::address::Address;
 use zcash_keys::{address::UnifiedAddress, keys::UnifiedIncomingViewingKey};
 use zcash_primitives::{
     block::BlockHash,
@@ -38,12 +38,21 @@ use zip32::fingerprint::SeedFingerprint;
 
 #[cfg(feature = "transparent-inputs")]
 use {
-    transparent::{address::TransparentAddress, keys::NonHardenedChildIndex},
+    transparent::{
+        address::TransparentAddress,
+        bundle::OutPoint,
+        keys::{NonHardenedChildIndex, TransparentKeyScope},
+    },
     zcash_client_backend::wallet::{Exposure, TransparentAddressMetadata},
     zip32::Scope,
 };
 
-use crate::{Account, AccountId, MemoryWalletBlock, MemoryWalletDb, Nullifier, error::Error};
+#[cfg(feature = "transparent-inputs")]
+use crate::input_source::utxo_output_ref;
+use crate::{
+    Account, AccountId, MemoryWalletBlock, MemoryWalletDb, Nullifier, error::Error,
+    input_source::note_output_ref,
+};
 
 impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
     type Error = Error;
@@ -193,6 +202,15 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
             .min())
     }
 
+    fn get_wallet_recover_until(&self) -> Result<Option<BlockHeight>, Self::Error> {
+        tracing::debug!("get_wallet_recover_until");
+        Ok(self
+            .accounts
+            .values()
+            .filter_map(|account| account.birthday().recover_until())
+            .max())
+    }
+
     fn get_wallet_summary(
         &self,
         confirmations_policy: ConfirmationsPolicy,
@@ -224,12 +242,13 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                 continue;
             }
             // don't count notes in unscanned ranges
-            let in_unscanned = unscanned.iter().any(
-                |(_, _, start_position, end_position_exclusive)| {
-                    note.commitment_tree_position >= *start_position
-                        && note.commitment_tree_position < *end_position_exclusive
-                },
-            );
+            let in_unscanned =
+                unscanned
+                    .iter()
+                    .any(|(_, _, start_position, end_position_exclusive)| {
+                        note.commitment_tree_position >= *start_position
+                            && note.commitment_tree_position < *end_position_exclusive
+                    });
             if in_unscanned {
                 continue;
             }
@@ -265,6 +284,13 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                 ) {
                     (true, true) => b.add_pending_change_value(note.note.value()),
                     (true, false) => b.add_pending_spendable_value(note.note.value()),
+                    // Only notes that would otherwise be spendable are counted as locked; a
+                    // locked note that is still pending confirmations stays in the pending
+                    // buckets above, since locking only matters once the note would enter
+                    // selection.
+                    (false, _) if self.output_is_locked(&note_output_ref(note), target_height) => {
+                        b.add_locked_value(note.note.value())
+                    }
                     (false, _) => b.add_spendable_value(note.note.value()),
                 }?;
                 Ok(())
@@ -276,6 +302,10 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                 }
                 PoolType::ORCHARD => {
                     account_balance.with_orchard_balance_mut(update_balance_with_note)?;
+                }
+                #[cfg(feature = "orchard")]
+                PoolType::IRONWOOD => {
+                    account_balance.with_ironwood_balance_mut(update_balance_with_note)?;
                 }
                 _ => unimplemented!("Unknown pool type"),
             }
@@ -313,6 +343,14 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
             .map(|s| s.root_addr().index())
             .unwrap_or(0);
 
+        #[cfg(feature = "orchard")]
+        let next_ironwood_subtree_index = self
+            .ironwood_tree
+            .store()
+            .last_shard()?
+            .map(|s| s.root_addr().index())
+            .unwrap_or(0);
+
         // Treat Sapling and Orchard outputs as having the same cost to scan.
         let sapling_scan_progress =
             self.sapling_scan_progress(&birthday_height, &fully_scanned_height, &chain_tip_height)?;
@@ -344,10 +382,8 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
             next_sapling_subtree_index,
             #[cfg(feature = "orchard")]
             next_orchard_subtree_index,
-            // The in-memory backend maintains no separate Ironwood (NU6.3) note commitment tree,
-            // so no Ironwood subtrees have been scanned; the next index is the initial 0.
             #[cfg(feature = "orchard")]
-            0,
+            next_ironwood_subtree_index,
         );
         Ok(Some(summary))
     }
@@ -381,6 +417,8 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                 sapling_commitment_tree_size,
                 #[cfg(feature = "orchard")]
                 orchard_commitment_tree_size,
+                #[cfg(feature = "orchard")]
+                ironwood_commitment_tree_size,
                 ..
             } = block;
             // TODO: Deal with legacy sapling trees
@@ -390,10 +428,8 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                 *sapling_commitment_tree_size,
                 #[cfg(feature = "orchard")]
                 *orchard_commitment_tree_size,
-                // The in-memory backend does not track an Ironwood (NU6.3) note commitment tree, so
-                // its size is unknown for every block.
                 #[cfg(feature = "orchard")]
-                None,
+                *ironwood_commitment_tree_size,
             )
         }))
     }
@@ -483,11 +519,22 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
             #[cfg(not(feature = "orchard"))]
             let orchard_anchor_height: Option<BlockHeight> = None;
 
-            let anchor_height = sapling_anchor_height
-                .zip(orchard_anchor_height)
-                .map(|(s, o)| std::cmp::min(s, o))
-                .or(sapling_anchor_height)
-                .or(orchard_anchor_height);
+            #[cfg(feature = "orchard")]
+            let ironwood_anchor_height =
+                self.get_ironwood_max_checkpointed_height(chain_tip_height, min_confirmations)?;
+            #[cfg(not(feature = "orchard"))]
+            let ironwood_anchor_height: Option<BlockHeight> = None;
+
+            // The anchor must be usable for every pool, so take the lowest height at which each
+            // tree that has any checkpoint is checkpointed.
+            let anchor_height = [
+                sapling_anchor_height,
+                orchard_anchor_height,
+                ironwood_anchor_height,
+            ]
+            .into_iter()
+            .flatten()
+            .min();
 
             Ok(anchor_height.map(|h| (TargetHeight::from(chain_tip_height + 1), h)))
         } else {
@@ -666,13 +713,85 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
     #[cfg(feature = "orchard")]
     fn get_ironwood_nullifiers(
         &self,
-        _query: NullifierQuery,
+        query: NullifierQuery,
     ) -> Result<Vec<(Self::AccountId, orchard::note::Nullifier)>, Self::Error> {
         tracing::debug!("get_ironwood_nullifiers");
-        // The in-memory backend does not currently scan or store Ironwood (NU6.3) notes, so it
-        // tracks no Ironwood nullifiers. Returning an empty set is the correct answer for a wallet
-        // that holds no Ironwood notes; it is called on the scan path, so it must not panic.
-        Ok(Vec::new())
+        let nullifiers = self.received_notes.get_ironwood_nullifiers();
+        Ok(match query {
+            NullifierQuery::All => nullifiers
+                .map(|(account_id, _, nf)| (account_id, nf))
+                .collect(),
+            NullifierQuery::Unspent => nullifiers
+                .filter_map(|(account_id, _, nf)| {
+                    // find any tx we know of that spends this nullifier and if so require that it is unmined or expired
+                    if let Some((height, tx_index)) = self.nullifiers.get(&Nullifier::Ironwood(nf))
+                    {
+                        if let Some(spending_tx) =
+                            self.tx_table.get_by_height_and_index(*height, *tx_index)
+                        {
+                            if matches!(spending_tx.status(), TransactionStatus::Mined(_))
+                                || spending_tx.expiry_height().is_none()
+                            {
+                                None
+                            } else {
+                                Some((account_id, nf))
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some((account_id, nf))
+                    }
+                })
+                .collect(),
+        })
+    }
+
+    #[cfg(feature = "transparent-inputs")]
+    fn get_unspent_transparent_outpoints(
+        &self,
+    ) -> Result<HashMap<OutPoint, Self::AccountId>, Self::Error> {
+        tracing::debug!("get_unspent_transparent_outpoints");
+        // No confirmation, maturity or lock filtering applies here: an output is included
+        // unless the wallet knows it to have been spent in a mined transaction.
+        let mut outpoints = HashMap::new();
+        for (outpoint, txo) in self.transparent_received_outputs.iter() {
+            let spent_in_mined_tx = match self.transparent_received_output_spends.get(outpoint) {
+                Some(spending_txid) => self
+                    .tx_table
+                    .get(spending_txid)
+                    .ok_or(Error::TransactionNotFound(*spending_txid))?
+                    .mined_height()
+                    .is_some(),
+                None => false,
+            };
+            if !spent_in_mined_tx {
+                outpoints.insert(outpoint.clone(), txo.account_id);
+            }
+        }
+        Ok(outpoints)
+    }
+
+    #[cfg(feature = "transparent-inputs")]
+    fn get_transparent_receiver_accounts(
+        &self,
+    ) -> Result<
+        HashMap<TransparentAddress, (Self::AccountId, Option<TransparentKeyScope>)>,
+        Self::Error,
+    > {
+        tracing::debug!("get_transparent_receiver_accounts");
+        // NOTE: As in `get_transparent_receivers`, this backend tracks only the external
+        // transparent receivers of each account's unified addresses; change, ephemeral and
+        // standalone receivers are not tracked.
+        let mut receivers = HashMap::new();
+        for (account_id, account) in self.accounts.iter() {
+            for ua in account.addresses().values() {
+                if let Some(ta) = ua.transparent() {
+                    receivers.insert(*ta, (*account_id, Some(Scope::External.into())));
+                }
+            }
+        }
+        Ok(receivers)
     }
 
     #[cfg(feature = "transparent-inputs")]
@@ -748,7 +867,11 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                     .entry(address)
                     .or_insert((key_origin, Balance::ZERO));
 
-                entry.1.add_spendable_value(txo.txout.value())?;
+                if self.output_is_locked(&utxo_output_ref(outpoint), target_height) {
+                    entry.1.add_locked_value(txo.txout.value())?;
+                } else {
+                    entry.1.add_spendable_value(txo.txout.value())?;
+                }
             }
         }
 
@@ -808,7 +931,9 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                 #[cfg(feature = "transparent-inputs")]
                 transparent_key_scope: None,
             };
-            if let Some(addr_info) = AddressInfo::from_parts(Address::Unified(ua.clone()), source) {
+            if let Some(addr_info) =
+                AddressInfo::from_parts(Address::Unified(Box::new(ua.clone())), source)
+            {
                 addresses.push(addr_info);
             }
         }

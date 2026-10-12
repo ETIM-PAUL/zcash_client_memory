@@ -8,11 +8,20 @@ use crate::proto::memwallet as proto;
 use crate::read_optional;
 use crate::wallet_commitment_trees::serialization::{tree_from_protobuf, tree_to_protobuf};
 
+/// The version of the serialization format written by [`MemoryWalletDb::encode`].
+///
+/// - Version 1: the format before Ironwood (NU6.3) support. It has no Ironwood note commitment
+///   tree, and wallets written in it may have scanned past NU6.3 activation without recording
+///   Ironwood notes.
+/// - Version 2: adds the Ironwood note commitment tree, Ironwood notes and nullifiers, and the
+///   Ironwood frontier of each account birthday.
+pub(crate) const CURRENT_VERSION: u32 = 2;
+
 impl<P: Parameters> MemoryWalletDb<P> {
     /// Encode a memory wallet db as a protobuf byte buffer
     /// Always uses the latest version of the wire protocol
     pub fn encode<B: BufMut>(&self, buf: &mut B) -> Result<()> {
-        let proto_wallet: proto::MemoryWallet = self.into();
+        let proto_wallet = proto::MemoryWallet::try_from(self)?;
         proto_wallet.encode(buf)?;
         Ok(())
     }
@@ -30,20 +39,55 @@ impl<P: Parameters> MemoryWalletDb<P> {
         max_checkpoints: usize,
     ) -> Result<Self> {
         match proto_wallet.version {
-            1 => Self::new_from_proto_v1(proto_wallet, params, max_checkpoints),
-            _ => Err(Error::UnsupportedProtoVersion(1, proto_wallet.version)),
+            1 => {
+                let mut wallet =
+                    Self::new_from_proto_common(proto_wallet, params, max_checkpoints)?;
+                wallet.migrate_from_v1()?;
+                Ok(wallet)
+            }
+            CURRENT_VERSION => Self::new_from_proto_common(proto_wallet, params, max_checkpoints),
+            _ => Err(Error::UnsupportedProtoVersion(
+                CURRENT_VERSION,
+                proto_wallet.version,
+            )),
         }
     }
 
-    fn new_from_proto_v1(
+    /// Migrates a wallet read from the version 1 format.
+    ///
+    /// Version 1 wallets did not record Ironwood (NU6.3) notes, so a wallet that scanned past NU6.3
+    /// activation may be missing Ironwood funds while believing those blocks to be scanned. This
+    /// re-queues every height at or above `max(wallet birthday, NU6.3 activation)` that the wallet
+    /// has reached for rescanning, so that the missing notes are found. Each rescanned range is
+    /// scanned from the tree state supplied at scan time, so the empty Ironwood tree a version 1
+    /// wallet starts with does not prevent this.
+    fn migrate_from_v1(&mut self) -> Result<()> {
+        #[cfg(feature = "orchard")]
+        {
+            use zcash_client_backend::data_api::WalletWrite as _;
+
+            let (Some(nu6_3), Some(birthday), Some(tip)) = (
+                self.params.activation_height(NetworkUpgrade::Nu6_3),
+                self.get_wallet_birthday()?,
+                self.chain_height()?,
+            ) else {
+                // Without an NU6.3 activation height, accounts, or a known chain tip, there is
+                // nothing the wallet could have skipped.
+                return Ok(());
+            };
+            let start = std::cmp::max(birthday, nu6_3);
+            if start <= tip {
+                self.queue_rescan(start..(tip + 1))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn new_from_proto_common(
         proto_wallet: proto::MemoryWallet,
         params: P,
         max_checkpoints: usize,
     ) -> Result<Self> {
-        if proto_wallet.version != 1 {
-            return Err(Error::UnsupportedProtoVersion(1, proto_wallet.version));
-        }
-
         let mut wallet = MemoryWalletDb::new(params, max_checkpoints);
 
         wallet.accounts = {
@@ -190,6 +234,28 @@ impl<P: Parameters> MemoryWalletDb<P> {
                 .collect::<Result<_>>()?;
         };
 
+        // Absent from version 1 wallets, which start with an empty Ironwood tree.
+        #[cfg(feature = "orchard")]
+        if let Some(ironwood_tree) = proto_wallet.ironwood_tree {
+            wallet.ironwood_tree = tree_from_protobuf(ironwood_tree, 100, 16.into())?;
+        }
+
+        #[cfg(feature = "orchard")]
+        {
+            wallet.ironwood_tree_shard_end_heights = proto_wallet
+                .ironwood_tree_shard_end_heights
+                .into_iter()
+                .map(|proto_end_height| {
+                    let address = Address::from_parts(
+                        Level::from(u8::try_from(proto_end_height.level)?),
+                        proto_end_height.index,
+                    );
+                    let height = proto_end_height.block_height.into();
+                    Ok((address, height))
+                })
+                .collect::<Result<_>>()?;
+        };
+
         wallet.transparent_received_outputs = TransparentReceivedOutputs(
             proto_wallet
                 .transparent_received_outputs
@@ -262,18 +328,20 @@ impl TryFrom<proto::TxId> for TxId {
     }
 }
 
-impl<P: Parameters> From<&MemoryWalletDb<P>> for proto::MemoryWallet {
-    fn from(wallet: &MemoryWalletDb<P>) -> Self {
-        Self {
-            version: 1,
+impl<P: Parameters> TryFrom<&MemoryWalletDb<P>> for proto::MemoryWallet {
+    type Error = Error;
+
+    fn try_from(wallet: &MemoryWalletDb<P>) -> Result<Self> {
+        Ok(Self {
+            version: CURRENT_VERSION,
             accounts: Some(proto::Accounts {
                 accounts: wallet
                     .accounts
                     .accounts
                     .clone()
                     .into_values()
-                    .map(proto::Account::from)
-                    .collect(),
+                    .map(proto::Account::try_from)
+                    .collect::<Result<Vec<_>>>()?,
                 account_nonce: wallet.accounts.nonce,
             }),
 
@@ -384,6 +452,25 @@ impl<P: Parameters> From<&MemoryWalletDb<P>> for proto::MemoryWallet {
             #[cfg(not(feature = "orchard"))]
             orchard_tree_shard_end_heights: Vec::new(),
 
+            #[cfg(feature = "orchard")]
+            ironwood_tree: tree_to_protobuf(&wallet.ironwood_tree).ok().flatten(),
+            #[cfg(not(feature = "orchard"))]
+            ironwood_tree: None,
+
+            #[cfg(feature = "orchard")]
+            ironwood_tree_shard_end_heights: wallet
+                .ironwood_tree_shard_end_heights
+                .clone()
+                .into_iter()
+                .map(|(address, height)| proto::TreeEndHeightsRecord {
+                    level: address.level().into(),
+                    index: address.index(),
+                    block_height: height.into(),
+                })
+                .collect(),
+            #[cfg(not(feature = "orchard"))]
+            ironwood_tree_shard_end_heights: Vec::new(),
+
             transparent_received_outputs: wallet
                 .transparent_received_outputs
                 .0
@@ -428,6 +515,101 @@ impl<P: Parameters> From<&MemoryWalletDb<P>> for proto::MemoryWallet {
                 .into_iter()
                 .map(Into::into)
                 .collect(),
-        }
+        })
+    }
+}
+
+#[cfg(all(test, feature = "orchard"))]
+mod migration_tests {
+    use zcash_client_backend::data_api::{
+        WalletRead, scanning::ScanPriority, testing::TestBuilder, wallet::ConfirmationsPolicy,
+    };
+    use zcash_protocol::{consensus::BlockHeight, local_consensus::LocalNetwork, value::Zatoshis};
+
+    use super::CURRENT_VERSION;
+    use crate::{Error, MemoryWalletDb};
+
+    /// A wallet serialized by the version 1 format (zcash_client_memory `feat/snap-nu63` @
+    /// `1feb38d`), holding one scanned 60_000 zatoshi Orchard note. It was produced on
+    /// `TestBuilder::DEFAULT_NETWORK`, on which NU6.3 is not active.
+    const V1_WALLET: &[u8] = include_bytes!("../../testing/fixtures/v1_wallet_orchard_note.bin");
+
+    fn orchard_balance(db: &MemoryWalletDb<LocalNetwork>) -> Zatoshis {
+        let summary = db
+            .get_wallet_summary(ConfirmationsPolicy::MIN)
+            .unwrap()
+            .unwrap();
+        summary
+            .account_balances()
+            .values()
+            .map(|b| b.orchard_balance().total())
+            .sum::<Option<Zatoshis>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn version_1_wallet_loads_and_is_rewritten_as_current_version() {
+        let network = TestBuilder::<(), ()>::DEFAULT_NETWORK;
+        let db = MemoryWalletDb::decode_new(V1_WALLET, network, 100).unwrap();
+        assert_eq!(orchard_balance(&db), Zatoshis::const_from_u64(60_000));
+
+        let mut bytes = vec![];
+        db.encode(&mut bytes).unwrap();
+        let proto =
+            <crate::proto::memwallet::MemoryWallet as prost::Message>::decode(&bytes[..]).unwrap();
+        assert_eq!(proto.version, CURRENT_VERSION);
+
+        let reloaded = MemoryWalletDb::decode_new(&bytes[..], network, 100).unwrap();
+        assert_eq!(reloaded, db);
+        assert_eq!(orchard_balance(&reloaded), Zatoshis::const_from_u64(60_000));
+    }
+
+    #[test]
+    fn version_1_wallet_rescans_from_nu6_3_activation() {
+        // The same wallet, loaded by an application whose network has NU6.3 active from the
+        // wallet birthday: everything the wallet has scanned since then may be missing Ironwood
+        // notes, so it must be queued for rescanning.
+        let activation = BlockHeight::from_u32(100_000);
+        let network = LocalNetwork {
+            nu6: Some(activation),
+            nu6_1: Some(activation),
+            nu6_2: Some(activation),
+            nu6_3: Some(activation),
+            ..TestBuilder::<(), ()>::DEFAULT_NETWORK
+        };
+        let db = MemoryWalletDb::decode_new(V1_WALLET, network, 100).unwrap();
+
+        let birthday = db.get_wallet_birthday().unwrap().unwrap();
+        let tip = db.chain_height().unwrap().unwrap();
+        let start = std::cmp::max(birthday, activation);
+        assert!(
+            start <= tip,
+            "the fixture has scanned past the rescan start"
+        );
+
+        let rescan: Vec<_> = db
+            .suggest_scan_ranges()
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.priority() == ScanPriority::Historic)
+            .collect();
+        assert!(
+            rescan
+                .iter()
+                .any(|r| r.block_range().start <= start && r.block_range().end > tip),
+            "a Historic rescan covering {start}..={tip} is queued; queue: {rescan:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_version_is_rejected() {
+        let mut proto =
+            <crate::proto::memwallet::MemoryWallet as prost::Message>::decode(V1_WALLET).unwrap();
+        proto.version = 99;
+        let network = TestBuilder::<(), ()>::DEFAULT_NETWORK;
+        assert!(matches!(
+            MemoryWalletDb::new_from_proto(proto, network, 100),
+            Err(Error::UnsupportedProtoVersion(CURRENT_VERSION, 99))
+        ));
     }
 }

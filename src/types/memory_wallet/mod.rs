@@ -23,15 +23,16 @@ use zcash_client_backend::{
     data_api::{
         Account as _, AccountBirthday, AccountSource, InputSource, Ratio, SAPLING_SHARD_HEIGHT,
         TransactionStatus, WalletRead,
+        locking::{LockFilter, LockOwner},
         scanning::{ScanPriority, ScanRange},
         wallet::{ConfirmationsPolicy, TargetHeight},
     },
-    wallet::{NoteId, WalletSaplingOutput},
+    wallet::{NoteId, OutputRef, WalletSaplingOutput},
 };
 use zcash_keys::keys::UnifiedFullViewingKey;
 use zcash_primitives::transaction::Transaction;
 use zcash_protocol::{
-    ShieldedProtocol, TxId,
+    ShieldedPool as ShieldedProtocol, TxId,
     consensus::{self, BlockHeight, NetworkUpgrade, TxIndex},
 };
 use zip32::{Scope, fingerprint::SeedFingerprint};
@@ -90,6 +91,17 @@ pub struct MemoryWalletDb<P: consensus::Parameters> {
     #[cfg(feature = "orchard")]
     /// Stores the block height corresponding to the last note commitment in a shard
     pub(crate) orchard_tree_shard_end_heights: BTreeMap<Address, BlockHeight>,
+    /// Ironwood (NU6.3) commitment tree. Ironwood note commitments are Orchard-shaped, so this
+    /// uses the Orchard hash type and shard height.
+    #[cfg(feature = "orchard")]
+    pub(crate) ironwood_tree: ShardTree<
+        MemoryShardStore<orchard::tree::MerkleHashOrchard, BlockHeight>,
+        { ORCHARD_SHARD_HEIGHT * 2 },
+        ORCHARD_SHARD_HEIGHT,
+    >,
+    #[cfg(feature = "orchard")]
+    /// Stores the block height corresponding to the last note commitment in an Ironwood shard
+    pub(crate) ironwood_tree_shard_end_heights: BTreeMap<Address, BlockHeight>,
 
     /// Transparent outputs received by the wallet
     pub(crate) transparent_received_outputs: TransparentReceivedOutputs,
@@ -102,6 +114,11 @@ pub struct MemoryWalletDb<P: consensus::Parameters> {
     pub(crate) transaction_data_request_queue: TransactionDataRequestQueue,
     /// Queue of block ranges that should be scanned along with their priority
     pub(crate) scan_queue: ScanQueue,
+    /// Advisory output locks, mapping each locked output to its owner and lock expiry height.
+    ///
+    /// Locks are short-lived and advisory, so this state is neither serialized nor compared:
+    /// a wallet restored from bytes starts with no locks held.
+    pub(crate) output_locks: BTreeMap<OutputRef, (LockOwner, BlockHeight)>,
 }
 
 impl<P: consensus::Parameters + PartialEq> PartialEq for MemoryWalletDb<P> {
@@ -109,8 +126,10 @@ impl<P: consensus::Parameters + PartialEq> PartialEq for MemoryWalletDb<P> {
     /// but does NOT compare the sapling_tree and orchard_tree fields.
     fn eq(&self, other: &Self) -> bool {
         #[cfg(feature = "orchard")]
-        let orchard_comparisons =
-            { self.orchard_tree_shard_end_heights == other.orchard_tree_shard_end_heights };
+        let orchard_comparisons = {
+            self.orchard_tree_shard_end_heights == other.orchard_tree_shard_end_heights
+                && self.ironwood_tree_shard_end_heights == other.ironwood_tree_shard_end_heights
+        };
         #[cfg(not(feature = "orchard"))]
         let orchard_comparisons = true;
 
@@ -153,6 +172,10 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             orchard_tree: ShardTree::new(MemoryShardStore::empty(), max_checkpoints),
             #[cfg(feature = "orchard")]
             orchard_tree_shard_end_heights: BTreeMap::new(),
+            #[cfg(feature = "orchard")]
+            ironwood_tree: ShardTree::new(MemoryShardStore::empty(), max_checkpoints),
+            #[cfg(feature = "orchard")]
+            ironwood_tree_shard_end_heights: BTreeMap::new(),
             tx_table: TransactionTable::new(),
             received_notes: ReceivedNoteTable::new(),
             sent_notes: SentNoteTable::new(),
@@ -160,6 +183,7 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             tx_locator: TxLocatorMap::new(),
             received_note_spends: ReceievedNoteSpends::new(),
             scan_queue: ScanQueue::new(),
+            output_locks: BTreeMap::new(),
             transparent_received_outputs: TransparentReceivedOutputs::new(),
             transparent_received_output_spends: TransparentReceivedOutputSpends::new(),
             transparent_spend_map: TransparentSpendCache::new(),
@@ -207,6 +231,23 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
         if let Some(frontier) = birthday.orchard_frontier().value() {
             tracing::debug!("Inserting Orchard frontier into ShardTree: {:?}", frontier);
             self.orchard_tree.insert_frontier_nodes(
+                frontier.clone(),
+                Retention::Checkpoint {
+                    // This subtraction is safe, because all leaves in the tree appear in blocks, and
+                    // the invariant that birthday.height() always corresponds to the block for which
+                    // `frontier` is the tree state at the start of the block. Together, this means
+                    // there exists a prior block for which frontier is the tree state at the end of
+                    // the block.
+                    id: birthday.height() - 1,
+                    marking: Marking::Reference,
+                },
+            )?;
+        }
+
+        #[cfg(feature = "orchard")]
+        if let Some(frontier) = birthday.prior_chain_state().final_ironwood_tree().value() {
+            tracing::debug!("Inserting Ironwood frontier into ShardTree: {:?}", frontier);
+            self.ironwood_tree.insert_frontier_nodes(
                 frontier.clone(),
                 Retention::Checkpoint {
                     // This subtraction is safe, because all leaves in the tree appear in blocks, and
@@ -380,6 +421,17 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
         #[cfg(feature = "orchard")]
         funding_accounts.extend(
             self.received_notes.detect_orchard_spending_accounts(
+                orchard::ValuePool::Ironwood,
+                tx.ironwood_bundle()
+                    .iter()
+                    .flat_map(|bundle| bundle.actions().iter().map(|action| action.nullifier())),
+            )?,
+        );
+
+        #[cfg(feature = "orchard")]
+        funding_accounts.extend(
+            self.received_notes.detect_orchard_spending_accounts(
+                orchard::ValuePool::Orchard,
                 tx.orchard_bundle()
                     .iter()
                     .flat_map(|bundle| bundle.actions().iter().map(|action| action.nullifier())),
@@ -442,6 +494,36 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             None => false,
         };
         Ok(spent)
+    }
+
+    /// Returns whether the output identified by `output` may be selected for spending in a
+    /// transaction mined at `target_height`, given the lock state recorded for it and the
+    /// caller's `lock_filter`.
+    ///
+    /// An output is eligible when it holds no lock, when its lock has expired
+    /// (`lock_expiry_height < target_height`), or when the filter's policy admits the owner of
+    /// its lock. Locks are advisory: admitting a lock during selection never releases it.
+    pub(crate) fn output_lock_admits(
+        &self,
+        output: &OutputRef,
+        target_height: TargetHeight,
+        lock_filter: LockFilter<'_>,
+    ) -> bool {
+        match (self.output_locks.get(output), lock_filter) {
+            (None, _) | (Some(_), LockFilter::Unfiltered) => true,
+            (Some((owner, expiry)), LockFilter::Policy(policy)) => {
+                *expiry < BlockHeight::from(target_height)
+                    || policy.overridable_owners().contains(owner)
+            }
+        }
+    }
+
+    /// Returns whether the output identified by `output` is currently locked, i.e. holds a lock
+    /// that has not expired as of `target_height`.
+    pub(crate) fn output_is_locked(&self, output: &OutputRef, target_height: TargetHeight) -> bool {
+        self.output_locks
+            .get(output)
+            .is_some_and(|(_, expiry)| *expiry >= BlockHeight::from(target_height))
     }
 
     /// To be spendable a note must be:
@@ -563,9 +645,28 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
         nf: orchard::note::Nullifier,
         txid: TxId,
     ) -> Result<(), Error> {
+        self.mark_orchard_family_note_spent(orchard::ValuePool::Orchard, nf, txid)
+    }
+
+    #[cfg(feature = "orchard")]
+    pub(crate) fn mark_ironwood_note_spent(
+        &mut self,
+        nf: orchard::note::Nullifier,
+        txid: TxId,
+    ) -> Result<(), Error> {
+        self.mark_orchard_family_note_spent(orchard::ValuePool::Ironwood, nf, txid)
+    }
+
+    #[cfg(feature = "orchard")]
+    fn mark_orchard_family_note_spent(
+        &mut self,
+        pool: orchard::ValuePool,
+        nf: orchard::note::Nullifier,
+        txid: TxId,
+    ) -> Result<(), Error> {
         let note_id = self
             .received_notes
-            .find_by_nullifier(&Nullifier::Orchard(nf))
+            .find_by_nullifier(&Nullifier::orchard_family(pool, nf))
             .map(|n| n.note_id())
             .ok_or(Error::NoteNotFound)?;
         self.received_note_spends.insert_spend(note_id, txid);
@@ -649,10 +750,40 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
         block_height: BlockHeight,
         new_entries: &[(TxIndex, TxId, Vec<orchard::note::Nullifier>)],
     ) -> Result<(), Error> {
+        self.insert_orchard_family_nullifier_map(
+            orchard::ValuePool::Orchard,
+            block_height,
+            new_entries,
+        )
+    }
+
+    #[cfg(feature = "orchard")]
+    pub(crate) fn insert_ironwood_nullifier_map(
+        &mut self,
+        block_height: BlockHeight,
+        new_entries: &[(TxIndex, TxId, Vec<orchard::note::Nullifier>)],
+    ) -> Result<(), Error> {
+        self.insert_orchard_family_nullifier_map(
+            orchard::ValuePool::Ironwood,
+            block_height,
+            new_entries,
+        )
+    }
+
+    #[cfg(feature = "orchard")]
+    fn insert_orchard_family_nullifier_map(
+        &mut self,
+        pool: orchard::ValuePool,
+        block_height: BlockHeight,
+        new_entries: &[(TxIndex, TxId, Vec<orchard::note::Nullifier>)],
+    ) -> Result<(), Error> {
         for (tx_index, txid, nullifiers) in new_entries {
             for nf in nullifiers.iter() {
-                self.nullifiers
-                    .insert(block_height, u32::from(*tx_index), Nullifier::Orchard(*nf));
+                self.nullifiers.insert(
+                    block_height,
+                    u32::from(*tx_index),
+                    Nullifier::orchard_family(pool, *nf),
+                );
             }
             match self.tx_locator.entry((block_height, u32::from(*tx_index))) {
                 Entry::Occupied(x) => {
@@ -694,6 +825,11 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
         self.orchard_tree_shard_end_heights.values().max().copied()
     }
 
+    #[cfg(feature = "orchard")]
+    pub(crate) fn ironwood_tip_shard_end_height(&self) -> Option<BlockHeight> {
+        self.ironwood_tree_shard_end_heights.values().max().copied()
+    }
+
     pub(crate) fn get_sapling_max_checkpointed_height(
         &self,
         chain_tip_height: BlockHeight,
@@ -723,6 +859,29 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
         for height in (0..=max_checkpoint_height).rev() {
             let height = BlockHeight::from_u32(height);
             if self.orchard_tree.store().get_checkpoint(&height)?.is_some() {
+                return Ok(Some(height));
+            }
+        }
+        Ok(None)
+    }
+
+    #[cfg(feature = "orchard")]
+    pub(crate) fn get_ironwood_max_checkpointed_height(
+        &self,
+        chain_tip_height: BlockHeight,
+        min_confirmations: NonZeroU32,
+    ) -> Result<Option<BlockHeight>, Error> {
+        let max_checkpoint_height =
+            u32::from(chain_tip_height).saturating_sub(u32::from(min_confirmations) - 1);
+        // scan backward and find the first checkpoint that matches a blockheight prior to max_checkpoint_height
+        for height in (0..=max_checkpoint_height).rev() {
+            let height = BlockHeight::from_u32(height);
+            if self
+                .ironwood_tree
+                .store()
+                .get_checkpoint(&height)?
+                .is_some()
+            {
                 return Ok(Some(height));
             }
         }
@@ -782,6 +941,8 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             let mut required_sapling_subtrees = BTreeSet::new();
             #[cfg(feature = "orchard")]
             let mut required_orchard_subtrees = BTreeSet::new();
+            #[cfg(feature = "orchard")]
+            let mut required_ironwood_subtrees = BTreeSet::new();
             for (protocol, position) in wallet_note_positions {
                 match protocol {
                     ShieldedProtocol::Sapling => {
@@ -798,12 +959,15 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
                         #[cfg(not(feature = "orchard"))]
                         return Err(Error::OrchardNotEnabled);
                     }
-                    // The in-memory backend scans only Sapling and Orchard outputs (see
-                    // `note_positions` construction in `put_blocks`), so it never records an
-                    // Ironwood (NU6.3) note position here.
-                    ShieldedProtocol::Ironwood => unreachable!(
-                        "the in-memory backend does not scan Ironwood note positions"
-                    ),
+                    ShieldedProtocol::Ironwood => {
+                        #[cfg(feature = "orchard")]
+                        required_ironwood_subtrees.insert(
+                            Address::above_position(ORCHARD_SHARD_HEIGHT.into(), *position).index(),
+                        );
+
+                        #[cfg(not(feature = "orchard"))]
+                        return Err(Error::OrchardNotEnabled);
+                    }
                 }
             }
 
@@ -822,6 +986,17 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
                     extended_range.as_ref().unwrap_or(&range),
                     required_orchard_subtrees,
                     self.params.activation_height(NetworkUpgrade::Nu5),
+                    wallet_birthday,
+                )?
+                .or(extended_range);
+
+            #[cfg(feature = "orchard")]
+            let extended_range = self
+                .extend_range(
+                    &ShieldedProtocol::Ironwood,
+                    extended_range.as_ref().unwrap_or(&range),
+                    required_ironwood_subtrees,
+                    self.params.activation_height(NetworkUpgrade::Nu6_3),
                     wallet_birthday,
                 )?
                 .or(extended_range);
@@ -890,11 +1065,17 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
                     #[cfg(not(feature = "orchard"))]
                     panic!("Unsupported pool")
                 }
-                // `extend_range` is only ever invoked for the Sapling and Orchard pools; the
-                // in-memory backend maintains no Ironwood (NU6.3) shard-end height map.
-                ShieldedProtocol::Ironwood => unreachable!(
-                    "extend_range is not invoked for the Ironwood pool"
-                ),
+                ShieldedProtocol::Ironwood => {
+                    #[cfg(feature = "orchard")]
+                    {
+                        Ok(self
+                            .ironwood_tree_shard_end_heights
+                            .get(&Address::from_parts(ORCHARD_SHARD_HEIGHT.into(), index))
+                            .cloned())
+                    }
+                    #[cfg(not(feature = "orchard"))]
+                    panic!("Unsupported pool")
+                }
             }
         };
 

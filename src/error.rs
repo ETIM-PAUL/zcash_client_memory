@@ -104,6 +104,8 @@ pub enum Error {
     NullifierFromSlice(#[from] TryFromSliceError),
     #[error("Error decoding ufvk string: {0}")]
     UfvkDecodeError(String),
+    #[error("Error encoding unified key or address: {0}")]
+    UnifiedEncodeError(String),
     #[error("Viewing key not found for account: {0:?}")]
     ViewingKeyNotFound(AccountId),
     #[error("Error parsing zcash address: {0}")]

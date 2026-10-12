@@ -367,7 +367,7 @@ impl Account {
     ) -> Result<Option<(TransparentAddress, NonHardenedChildIndex)>, Error> {
         Ok(self
             .uivk()
-            .transparent()
+            .p2pkh()
             .as_ref()
             .map(|tivk| tivk.default_address()))
     }
@@ -395,7 +395,7 @@ impl Account {
     }
     pub(crate) fn ephemeral_ivk(&self) -> Result<Option<EphemeralIvk>, Error> {
         self.viewing_key
-            .transparent()
+            .p2pkh()
             .map(AccountPubKey::derive_ephemeral_ivk)
             .transpose()
             .map_err(Into::into)
@@ -594,16 +594,18 @@ mod serialization {
     use crate::proto::memwallet as proto;
     use crate::read_optional;
 
-    impl From<Accounts> for proto::Accounts {
-        fn from(accounts: Accounts) -> Self {
-            Self {
+    impl TryFrom<Accounts> for proto::Accounts {
+        type Error = Error;
+
+        fn try_from(accounts: Accounts) -> Result<Self, Error> {
+            Ok(Self {
                 account_nonce: accounts.nonce,
                 accounts: accounts
                     .accounts
                     .into_values()
-                    .map(|acc| acc.into())
-                    .collect(),
-            }
+                    .map(proto::Account::try_from)
+                    .collect::<Result<_, _>>()?,
+            })
         }
     }
 
@@ -620,9 +622,11 @@ mod serialization {
         }
     }
 
-    impl From<Account> for proto::Account {
-        fn from(acc: Account) -> Self {
-            Self {
+    impl TryFrom<Account> for proto::Account {
+        type Error = Error;
+
+        fn try_from(acc: Account) -> Result<Self, Error> {
+            Ok(Self {
                 account_name: acc.account_name.clone(),
                 account_id: *acc.account_id,
                 kind: match acc.kind {
@@ -663,14 +667,21 @@ mod serialization {
                     AccountSource::Imported { ref key_source, .. } => key_source,
                 }
                 .clone(),
-                viewing_key: acc.viewing_key.encode(&EncodingParams),
+                viewing_key: acc
+                    .viewing_key
+                    .encode(&EncodingParams)
+                    .map_err(|e| Error::UnifiedEncodeError(e.to_string()))?,
                 birthday: acc.birthday().clone().try_into().ok(),
                 addresses: acc
                     .addresses()
                     .iter()
                     .map(|(di, a)| proto::Address {
                         diversifier_index: di.as_bytes().to_vec(),
-                        address: a.encode(&EncodingParams), // convention is to encode using mainnet encoding regardless of network
+                        // Convention is to encode using mainnet encoding regardless of network.
+                        // The receiver-preserving form is required here: the default encoding is
+                        // for sharing, and omits the transparent receiver of an address that has a
+                        // shielded receiver, which would lose it when the wallet is restored.
+                        address: a.encode_receiver_preserving(&EncodingParams),
                     })
                     .collect(),
                 #[cfg(feature = "transparent-inputs")]
@@ -688,7 +699,7 @@ mod serialization {
                     .collect(),
                 #[cfg(not(feature = "transparent-inputs"))]
                 ephemeral_addresses: Default::default(),
-            }
+            })
         }
     }
 
@@ -732,7 +743,7 @@ mod serialization {
                     _ => unreachable!(),
                 },
                 viewing_key: UnifiedFullViewingKey::decode(&EncodingParams, &acc.viewing_key)
-                    .map_err(Error::UfvkDecodeError)?,
+                    .map_err(|e| Error::UfvkDecodeError(e.to_string()))?,
                 birthday: read_optional!(acc, birthday)?.try_into()?,
                 addresses: acc
                     .addresses
@@ -743,7 +754,7 @@ mod serialization {
                                 a.diversifier_index,
                             )?),
                             UnifiedAddress::decode(&EncodingParams, &a.address)
-                                .map_err(Error::UfvkDecodeError)?,
+                                .map_err(|e| Error::UfvkDecodeError(e.to_string()))?,
                         ))
                     })
                     .collect::<Result<_, Error>>()?,
@@ -800,12 +811,22 @@ mod serialization {
             #[cfg(not(feature = "orchard"))]
             let orchard_tree_bytes = vec![];
 
+            #[cfg(feature = "orchard")]
+            let ironwood_tree_bytes = {
+                let mut ironwood_tree_bytes = vec![];
+                write_frontier_v1(&mut ironwood_tree_bytes, cstate.final_ironwood_tree())?;
+                ironwood_tree_bytes
+            };
+            #[cfg(not(feature = "orchard"))]
+            let ironwood_tree_bytes = vec![];
+
             Ok(Self {
                 prior_chain_state: Some(proto::ChainState {
                     block_height: cstate.block_height().into(),
                     block_hash: cstate.block_hash().0.to_vec(),
                     final_sapling_tree: sapling_tree_bytes,
                     final_orchard_tree: orchard_tree_bytes,
+                    final_ironwood_tree: ironwood_tree_bytes,
                 }),
                 recover_until: birthday.recover_until().map(|r| r.into()),
             })
@@ -823,10 +844,15 @@ mod serialization {
                 read_frontier_v1(&cs.final_sapling_tree[..])?,
                 #[cfg(feature = "orchard")]
                 read_frontier_v1(&cs.final_orchard_tree[..])?,
-                // The in-memory backend does not persist an Ironwood (NU6.3) note commitment
-                // frontier, so its chain state is reconstructed as an empty Ironwood tree.
+                // Version 1 wallets did not persist the Ironwood (NU6.3) frontier; for those it is
+                // reconstructed as empty. Scanning supplies the frontier at the start of each
+                // scanned range, so the Ironwood tree is still built correctly.
                 #[cfg(feature = "orchard")]
-                incrementalmerkletree::frontier::Frontier::empty(),
+                if cs.final_ironwood_tree.is_empty() {
+                    incrementalmerkletree::frontier::Frontier::empty()
+                } else {
+                    read_frontier_v1(&cs.final_ironwood_tree[..])?
+                },
             );
 
             let recover_until = birthday.recover_until.map(|r| r.into());
@@ -860,9 +886,9 @@ mod serialization {
             )
             .unwrap();
 
-            let proto_acc: proto::Account = acc.clone().into();
+            let proto_acc: proto::Account = acc.clone().try_into().unwrap();
             let acc2: Account = proto_acc.clone().try_into().unwrap();
-            let proto_acc2: proto::Account = acc2.clone().into();
+            let proto_acc2: proto::Account = acc2.clone().try_into().unwrap();
 
             assert_eq!(proto_acc, proto_acc2);
         }
@@ -887,11 +913,13 @@ mod serialization {
             .unwrap();
 
             // Verify serialization doesn't panic
-            let proto_acc: proto::Account = acc.clone().into();
+            let proto_acc: proto::Account = acc.clone().try_into().unwrap();
 
             // Birthday should be present for valid accounts
-            assert!(proto_acc.birthday.is_some() || proto_acc.birthday.is_none(),
-                "Birthday field should serialize without panicking");
+            assert!(
+                proto_acc.birthday.is_some() || proto_acc.birthday.is_none(),
+                "Birthday field should serialize without panicking"
+            );
         }
 
         #[test]
@@ -911,7 +939,7 @@ mod serialization {
             )
             .unwrap();
 
-            let proto_acc: proto::Account = acc.clone().into();
+            let proto_acc: proto::Account = acc.clone().try_into().unwrap();
             let acc2: Account = proto_acc.try_into().unwrap();
 
             assert_eq!(acc.account_name, acc2.account_name);

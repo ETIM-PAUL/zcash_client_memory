@@ -1,7 +1,11 @@
 use std::convert::Infallible;
 
 use incrementalmerkletree::Address;
-use shardtree::{ShardTree, error::ShardTreeError, store::memory::MemoryShardStore};
+use shardtree::{
+    ShardTree,
+    error::ShardTreeError,
+    store::{ShardStore as _, memory::MemoryShardStore},
+};
 #[cfg(feature = "orchard")]
 use zcash_client_backend::data_api::ORCHARD_SHARD_HEIGHT;
 use zcash_client_backend::data_api::{
@@ -54,6 +58,14 @@ impl<P: consensus::Parameters> WalletCommitmentTrees for MemoryWalletDb<P> {
         Ok(())
     }
 
+    fn get_sapling_subtree_root(
+        &mut self,
+        index: u64,
+    ) -> Result<Option<sapling::Node>, ShardTreeError<Self::Error>> {
+        tracing::debug!("get_sapling_subtree_root");
+        subtree_root(&self.sapling_tree, SAPLING_SHARD_HEIGHT, index)
+    }
+
     #[cfg(feature = "orchard")]
     type OrchardShardStore<'a> = MemoryShardStore<orchard::tree::MerkleHashOrchard, BlockHeight>;
 
@@ -71,6 +83,15 @@ impl<P: consensus::Parameters> WalletCommitmentTrees for MemoryWalletDb<P> {
     {
         tracing::debug!("with_orchard_tree_mut");
         callback(&mut self.orchard_tree)
+    }
+
+    #[cfg(feature = "orchard")]
+    fn get_orchard_subtree_root(
+        &mut self,
+        index: u64,
+    ) -> Result<Option<orchard::tree::MerkleHashOrchard>, ShardTreeError<Self::Error>> {
+        tracing::debug!("get_orchard_subtree_root");
+        subtree_root(&self.orchard_tree, ORCHARD_SHARD_HEIGHT, index)
     }
 
     /// Adds a sequence of note commitment tree subtree roots to the data store.
@@ -98,6 +119,72 @@ impl<P: consensus::Parameters> WalletCommitmentTrees for MemoryWalletDb<P> {
 
         Ok(())
     }
+
+    #[cfg(feature = "orchard")]
+    fn with_ironwood_tree_mut<F, A, E>(&mut self, mut callback: F) -> Result<Option<A>, E>
+    where
+        for<'a> F: FnMut(
+            &'a mut ShardTree<
+                Self::OrchardShardStore<'a>,
+                { ORCHARD_SHARD_HEIGHT * 2 },
+                ORCHARD_SHARD_HEIGHT,
+            >,
+        ) -> Result<A, E>,
+        E: From<ShardTreeError<Self::Error>>,
+    {
+        tracing::debug!("with_ironwood_tree_mut");
+        callback(&mut self.ironwood_tree).map(Some)
+    }
+
+    #[cfg(feature = "orchard")]
+    fn put_ironwood_subtree_roots(
+        &mut self,
+        start_index: u64,
+        roots: &[CommitmentTreeRoot<orchard::tree::MerkleHashOrchard>],
+    ) -> Result<(), ShardTreeError<Self::Error>> {
+        tracing::debug!("put_ironwood_subtree_roots");
+        for (root, i) in roots.iter().zip(0u64..) {
+            let root_addr = Address::from_parts(ORCHARD_SHARD_HEIGHT.into(), start_index + i);
+            self.ironwood_tree.insert(root_addr, *root.root_hash())?;
+        }
+
+        // store the end block heights for each shard as well
+        for (root, i) in roots.iter().zip(0u64..) {
+            let root_addr = Address::from_parts(ORCHARD_SHARD_HEIGHT.into(), start_index + i);
+            self.ironwood_tree_shard_end_heights
+                .insert(root_addr, root.subtree_end_height());
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "orchard")]
+    fn get_ironwood_subtree_root(
+        &mut self,
+        index: u64,
+    ) -> Result<Option<orchard::tree::MerkleHashOrchard>, ShardTreeError<Self::Error>> {
+        tracing::debug!("get_ironwood_subtree_root");
+        subtree_root(&self.ironwood_tree, ORCHARD_SHARD_HEIGHT, index)
+    }
+}
+
+/// Returns the stored root hash of the completed subtree with the given index, or `Ok(None)` if no
+/// root is recorded for that subtree.
+fn subtree_root<
+    H: Clone + incrementalmerkletree::Hashable + PartialEq,
+    const DEPTH: u8,
+    const SHARD_HEIGHT: u8,
+>(
+    tree: &ShardTree<MemoryShardStore<H, BlockHeight>, DEPTH, SHARD_HEIGHT>,
+    shard_height: u8,
+    index: u64,
+) -> Result<Option<H>, ShardTreeError<Infallible>> {
+    let shard_addr = Address::from_parts(shard_height.into(), index);
+    Ok(tree
+        .store()
+        .get_shard(shard_addr)
+        .map_err(ShardTreeError::Storage)?
+        .and_then(|shard| shard.root().node_value().cloned()))
 }
 
 pub(crate) mod serialization {
@@ -134,7 +221,10 @@ pub(crate) mod serialization {
             .iter()
             .map(|shard_root| {
                 let shard = tree.store().get_shard(*shard_root)?.ok_or_else(|| {
-                    Error::Other(format!("Missing shard for root index {}", shard_root.index()))
+                    Error::Other(format!(
+                        "Missing shard for root index {}",
+                        shard_root.index()
+                    ))
                 })?;
 
                 let mut shard_data = Vec::new();

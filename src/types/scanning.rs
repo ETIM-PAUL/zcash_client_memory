@@ -131,6 +131,96 @@ impl ScanQueue {
         Ok(())
     }
 
+    /// Drops the scan work queued below `height`, except where retained by
+    /// `retain_with_priority`, and returns the number of queue entries removed or altered.
+    ///
+    /// Entries with the bookkeeping priorities `Scanned` and `Ignored` are always retained when
+    /// `retain_with_priority` is `Some`, as are entries with that priority or greater. Pruned
+    /// ranges are demoted to `Ignored` where needed to keep the queue contiguous above the lowest
+    /// retained entry.
+    pub(crate) fn prune_below(
+        &mut self,
+        height: BlockHeight,
+        retain_with_priority: Option<ScanPriority>,
+    ) -> u64 {
+        let is_retained = |priority: ScanPriority| {
+            retain_with_priority
+                .is_some_and(|retain| priority <= ScanPriority::Scanned || priority >= retain)
+        };
+
+        // Every entry this operation can touch starts below `height`.
+        let mut existing: Vec<ScanRange> = self
+            .0
+            .iter()
+            .filter(|(start, _, _)| *start < height)
+            .map(|(start, end, priority)| ScanRange::from_parts(*start..*end, *priority))
+            .collect();
+        existing.sort_by_key(|entry| entry.block_range().start);
+
+        // The lowest retained entry is the floor of the region that must remain covered.
+        let fill_from = existing
+            .iter()
+            .find(|entry| is_retained(entry.priority()))
+            .map(|entry| entry.block_range().start);
+
+        let replacement = existing
+            .iter()
+            .flat_map(|entry| {
+                let range = entry.block_range();
+                if is_retained(entry.priority()) {
+                    vec![entry.clone()]
+                } else {
+                    // Only the part below `height` is pruned; any remainder keeps its priority.
+                    let pruned = ScanRange::from_parts(
+                        range.start..std::cmp::min(range.end, height),
+                        ScanPriority::Ignored,
+                    );
+                    let kept = (range.end > height)
+                        .then(|| ScanRange::from_parts(height..range.end, entry.priority()));
+
+                    match fill_from {
+                        Some(floor) if pruned.block_range().end > floor => {
+                            Some(pruned).into_iter().chain(kept).collect()
+                        }
+                        _ => kept.into_iter().collect(),
+                    }
+                }
+            })
+            .fold(Vec::<ScanRange>::new(), |mut acc, entry| {
+                match acc.last() {
+                    Some(prev)
+                        if prev.priority() == entry.priority()
+                            && prev.block_range().end == entry.block_range().start =>
+                    {
+                        let merged = ScanRange::from_parts(
+                            prev.block_range().start..entry.block_range().end,
+                            prev.priority(),
+                        );
+                        acc.pop();
+                        acc.push(merged);
+                    }
+                    _ => acc.push(entry),
+                }
+                acc
+            });
+
+        if replacement == existing {
+            return 0;
+        }
+
+        let changed = existing
+            .iter()
+            .filter(|entry| !replacement.contains(entry))
+            .count() as u64;
+
+        self.0.retain(|(start, _, _)| *start >= height);
+        self.0.extend(replacement.iter().map(|entry| {
+            let range = entry.block_range();
+            (range.start, range.end, entry.priority())
+        }));
+        changed
+    }
+
     pub fn delete_starts_greater_than_equal_to(&mut self, height: BlockHeight) {
         self.0.retain(|(start, _, _)| *start < height);
     }
@@ -198,5 +288,81 @@ mod serialization {
                 },
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use zcash_client_backend::data_api::scanning::ScanPriority;
+    use zcash_protocol::consensus::BlockHeight;
+
+    use super::ScanQueue;
+
+    fn h(n: u32) -> BlockHeight {
+        BlockHeight::from_u32(n)
+    }
+
+    fn queue(entries: &[(u32, u32, ScanPriority)]) -> ScanQueue {
+        ScanQueue(entries.iter().map(|(s, e, p)| (h(*s), h(*e), *p)).collect())
+    }
+
+    fn sorted(q: &ScanQueue) -> Vec<(u32, u32, ScanPriority)> {
+        let mut v: Vec<_> =
+            q.0.iter()
+                .map(|(s, e, p)| (u32::from(*s), u32::from(*e), *p))
+                .collect();
+        v.sort_by_key(|(s, _, _)| *s);
+        v
+    }
+
+    #[test]
+    fn prune_below_retains_at_and_above_priority() {
+        use ScanPriority::*;
+        let mut q = queue(&[
+            (419_200, 450_000, Ignored),   // bookkeeping: kept
+            (450_000, 460_000, FoundNote), // retained priority: kept
+            (460_000, 500_000, Scanned),   // bookkeeping: kept
+            (500_000, 700_000, Historic),  // straddler: split at the height
+            (700_000, 710_000, ChainTip),  // above the height: untouched
+        ]);
+
+        let changed = q.prune_below(h(663_150), Some(FoundNote));
+
+        assert_eq!(changed, 1);
+        assert_eq!(
+            sorted(&q),
+            vec![
+                (419_200, 450_000, Ignored),
+                (450_000, 460_000, FoundNote),
+                (460_000, 500_000, Scanned),
+                // The pruned part is demoted to `Ignored`, preserving contiguity above the lowest
+                // retained entry, and the remainder keeps its priority.
+                (500_000, 663_150, Ignored),
+                (663_150, 700_000, Historic),
+                (700_000, 710_000, ChainTip),
+            ]
+        );
+    }
+
+    #[test]
+    fn prune_below_without_retention_drops_everything_below() {
+        use ScanPriority::*;
+        let mut q = queue(&[(0, 10, Historic), (10, 30, Historic), (30, 40, ChainTip)]);
+
+        let changed = q.prune_below(h(20), None);
+
+        assert_eq!(changed, 2);
+        assert_eq!(sorted(&q), vec![(20, 30, Historic), (30, 40, ChainTip)]);
+    }
+
+    #[test]
+    fn prune_below_is_a_noop_when_nothing_is_prunable() {
+        use ScanPriority::*;
+        let entries = [(0, 10, Scanned), (10, 20, Ignored), (20, 30, Historic)];
+        let mut q = queue(&entries);
+
+        // Everything below the height is bookkeeping, so there is nothing to prune.
+        assert_eq!(q.prune_below(h(20), Some(Historic)), 0);
+        assert_eq!(sorted(&q), entries.to_vec());
     }
 }
