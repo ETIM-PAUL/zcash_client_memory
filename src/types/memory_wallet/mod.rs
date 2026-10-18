@@ -1431,6 +1431,28 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
         &self.tx_table
     }
 
+    /// Transactions that pay this wallet but whose full data has never been stored.
+    ///
+    /// Scanning compact blocks finds notes but cannot read their memos; the memos only appear once
+    /// the whole transaction has been downloaded and decrypted (`decrypt_and_store_transaction`),
+    /// which also stores the raw transaction. A caller that wants memos should fetch each of
+    /// these. Transactions created by this wallet already have their raw data and are not listed.
+    pub fn txids_needing_enhancement(&self) -> Vec<zcash_protocol::TxId> {
+        let mut txids: Vec<_> = self
+            .received_notes
+            .iter()
+            .map(|n| n.txid())
+            .filter(|txid| {
+                self.tx_table
+                    .get(txid)
+                    .is_none_or(|entry| entry.raw().is_none())
+            })
+            .collect();
+        txids.sort();
+        txids.dedup();
+        txids
+    }
+
     /// Returns the block_time for a given block height, if the block is in the wallet's cache
     pub fn get_block_time(&self, height: BlockHeight) -> Option<u32> {
         self.blocks.get(&height).map(|block| block.block_time)

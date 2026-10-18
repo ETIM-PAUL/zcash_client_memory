@@ -15,7 +15,7 @@ pub use memory_wallet::*;
 pub(crate) use nullifier::*;
 
 // Re-export types needed for transaction history feature
-pub use notes::{ReceivedNote, ReceivedNoteTable, SentNote, SentNoteTable};
+pub use notes::{ReceivedNote, ReceivedNoteTable, SentNote, SentNoteId, SentNoteTable};
 pub use transaction::{TransactionEntry, TransactionTable};
 
 // Keep internal re-exports for crate use

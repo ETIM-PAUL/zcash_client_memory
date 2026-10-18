@@ -356,6 +356,11 @@ impl ReceivedNoteTable {
             let old_nf = existing.nf;
             existing.nf = note.nf.or(existing.nf);
             existing.is_change = note.is_change || existing.is_change;
+            // A note found by scanning has no memo (compact outputs carry none); the same note
+            // decrypted from its full transaction does. Never replace a memo with an empty one.
+            if note.memo != Memo::Empty {
+                existing.memo = note.memo;
+            }
             existing.commitment_tree_position = note
                 .commitment_tree_position
                 .or(existing.commitment_tree_position);
@@ -640,6 +645,32 @@ mod tests {
         // Length unchanged, is_change merged via OR
         assert_eq!(table.notes.len(), 1);
         assert!(table.find_by_note_id(&note_id).unwrap().is_change);
+    }
+
+    #[test]
+    fn test_upsert_fills_in_memo_found_later_and_never_erases_it() {
+        let mut table = ReceivedNoteTable::new();
+        // First seen by scanning: no memo.
+        let scanned = make_test_note(0x05, 0, 5, Some(0xEE));
+        let note_id = scanned.note_id;
+        table.insert_received_note(scanned);
+        assert_eq!(table.find_by_note_id(&note_id).unwrap().memo, Memo::Empty);
+
+        // Then decrypted from the full transaction: memo present.
+        let mut decrypted = make_test_note(0x05, 0, 5, Some(0xEE));
+        decrypted.memo = "hello".parse().unwrap();
+        table.insert_received_note(decrypted);
+        assert_eq!(
+            table.find_by_note_id(&note_id).unwrap().memo,
+            "hello".parse::<Memo>().unwrap()
+        );
+
+        // A later re-scan (empty memo) must not erase it.
+        table.insert_received_note(make_test_note(0x05, 0, 5, Some(0xEE)));
+        assert_eq!(
+            table.find_by_note_id(&note_id).unwrap().memo,
+            "hello".parse::<Memo>().unwrap()
+        );
     }
 
     #[test]
