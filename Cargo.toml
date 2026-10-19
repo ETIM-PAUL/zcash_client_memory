@@ -29,7 +29,7 @@ tokio = {version = "1", features = ["sync"]}
 # Dependencies exposed in a public API:
 # (Breaking upgrades to these require a breaking upgrade to this crate.)
 # - Errors
-bip32 = {version = "0.6", default-features = false, features = ["alloc"], optional = true}
+bip32 = {version = "0.6", default-features = false, features = ["alloc"]}
 zip32 = {version = "0.3", default-features = false}
 
 # - Logging and metrics
@@ -111,7 +111,6 @@ pczt = ["orchard", "transparent-inputs", "zcash_client_backend/pczt"]
 
 ## Enables receiving transparent funds and sending to transparent recipients
 transparent-inputs = [
-  "dep:bip32",
   "dep:secp256k1",
   "zcash_keys/transparent-inputs",
   "zcash_client_backend/transparent-inputs"
